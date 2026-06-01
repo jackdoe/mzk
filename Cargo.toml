@@ -1,0 +1,15 @@
+[package]
+name = "mzk"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mzk"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
