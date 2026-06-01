@@ -96,10 +96,6 @@ impl Reader {
     }
 }
 
-pub fn scale(sample: f32, gain: f32, volume: f32) -> f32 {
-    (sample * gain * volume).clamp(-1.0, 1.0)
-}
-
 pub fn gain_from_q8(output_gain: i16) -> f32 {
     10f32.powf(output_gain as f32 / (20.0 * 256.0))
 }
@@ -117,12 +113,5 @@ mod tests {
         let mut out = [0.0f32; 3];
         assert_eq!(r.pop(&mut out), 3);
         assert_eq!(out, [1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn scale_clamps() {
-        assert_eq!(scale(2.0, 1.0, 1.0), 1.0);
-        assert_eq!(scale(-2.0, 1.0, 1.0), -1.0);
-        assert_eq!(scale(0.5, 1.0, 0.5), 0.25);
     }
 }

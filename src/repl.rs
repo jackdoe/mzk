@@ -110,6 +110,7 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
             }
             Parsed::Pause => {
                 eng.send(Command::Pause);
+                std::thread::sleep(std::time::Duration::from_millis(20));
                 let s = eng.status();
                 println!("{}", if s.paused { "pause" } else { "play" });
             }

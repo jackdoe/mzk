@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::pcm::Reader;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -99,6 +99,8 @@ pub struct PulseSink {
     reader: Option<Reader>,
     stop: Arc<AtomicBool>,
     flush: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    vol: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -108,8 +110,18 @@ impl PulseSink {
             reader: Some(reader),
             stop: Arc::new(AtomicBool::new(false)),
             flush: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+            vol: Arc::new(AtomicU32::new(1.0f32.to_bits())),
             thread: None,
         }
+    }
+
+    pub fn set_volume(&self, v: f32) {
+        self.vol.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_paused(&self, p: bool) {
+        self.paused.store(p, Ordering::Relaxed);
     }
 
     pub fn start(&mut self) -> Result<()> {
@@ -154,6 +166,8 @@ impl PulseSink {
         let handle = Handle(s);
         let stop = self.stop.clone();
         let flush = self.flush.clone();
+        let paused = self.paused.clone();
+        let vol = self.vol.clone();
         self.thread = Some(std::thread::spawn(move || {
             let handle = handle;
             let mut buf = [0f32; CHUNK];
@@ -162,9 +176,17 @@ impl PulseSink {
                 if flush.swap(false, Ordering::Relaxed) {
                     unsafe { (lib.flush)(handle.0, &mut e) };
                 }
+                if paused.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
                 let got = reader.pop(&mut buf);
-                for v in buf[got..].iter_mut() {
-                    *v = 0.0;
+                let v = f32::from_bits(vol.load(Ordering::Relaxed));
+                for s in buf[..got].iter_mut() {
+                    *s = (*s * v).clamp(-1.0, 1.0);
+                }
+                for s in buf[got..].iter_mut() {
+                    *s = 0.0;
                 }
                 let bytes = CHUNK * 4;
                 unsafe {

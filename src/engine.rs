@@ -2,7 +2,7 @@ use crate::audio::PlatformSink;
 use crate::celt::{decode_frame, DecoderState, Mode};
 use crate::error::Result;
 use crate::ogg::OpusStream;
-use crate::pcm::{gain_from_q8, scale, Ring};
+use crate::pcm::{gain_from_q8, Ring};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -190,7 +190,7 @@ impl Track {
         self.emitted = self.idx as u64 * FRAME as u64;
     }
 
-    fn next(&mut self, mode: &Mode, vol: f32) -> Option<Vec<f32>> {
+    fn next(&mut self, mode: &Mode) -> Option<Vec<f32>> {
         if self.idx >= self.stream.packets.len() {
             return None;
         }
@@ -208,10 +208,7 @@ impl Track {
             self.pre_skip -= d as u64;
             drop = d * 2;
         }
-        let out: Vec<f32> = frame[drop..]
-            .iter()
-            .map(|&s| scale(s, self.gain, vol))
-            .collect();
+        let out: Vec<f32> = frame[drop..].iter().map(|&s| s * self.gain).collect();
         Some(out)
     }
 }
@@ -247,9 +244,18 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                 Command::Quit => {
                     quit = true;
                 }
-                Command::Pause => paused = !paused,
-                Command::Vol(v) => vol = v.clamp(0.0, 1.0),
-                Command::VolDelta(d) => vol = (vol + d).clamp(0.0, 1.0),
+                Command::Pause => {
+                    paused = !paused;
+                    sink.set_paused(paused);
+                }
+                Command::Vol(v) => {
+                    vol = v.clamp(0.0, 1.0);
+                    sink.set_volume(vol);
+                }
+                Command::VolDelta(d) => {
+                    vol = (vol + d).clamp(0.0, 1.0);
+                    sink.set_volume(vol);
+                }
                 Command::Shuffle(on) => {
                     let cur = order.get(order_pos).copied().unwrap_or(0);
                     shuffle = on;
@@ -325,7 +331,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
         if !paused {
             if let Some(t) = track.as_mut() {
                 if pending.is_empty() {
-                    match t.next(&mode, vol) {
+                    match t.next(&mode) {
                         Some(s) => {
                             pending = s;
                             worked = true;

@@ -65,7 +65,9 @@ extern "C" {
     fn AudioQueueStart(in_aq: AudioQueueRef, in_device_start_time: *const c_void) -> OsStatus;
 
     fn AudioQueueStop(in_aq: AudioQueueRef, in_immediate: u8) -> OsStatus;
+    fn AudioQueuePause(in_aq: AudioQueueRef) -> OsStatus;
     fn AudioQueueFlush(in_aq: AudioQueueRef) -> OsStatus;
+    fn AudioQueueSetParameter(in_aq: AudioQueueRef, in_param_id: u32, in_value: f32) -> OsStatus;
 
     fn AudioQueueDispose(in_aq: AudioQueueRef, in_immediate: u8) -> OsStatus;
 
@@ -188,6 +190,27 @@ impl CoreAudioSink {
 
         self.running = true;
         Ok(())
+    }
+
+    pub fn set_volume(&self, v: f32) {
+        if !self.queue.is_null() {
+            unsafe {
+                AudioQueueSetParameter(self.queue, 1, v);
+            }
+        }
+    }
+
+    pub fn set_paused(&self, p: bool) {
+        if self.queue.is_null() {
+            return;
+        }
+        unsafe {
+            if p {
+                AudioQueuePause(self.queue);
+            } else {
+                AudioQueueStart(self.queue, ptr::null());
+            }
+        }
     }
 
     pub fn flush(&self) {
