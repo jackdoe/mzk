@@ -152,11 +152,17 @@ fn boxes(data: &[u8], start: usize, end: usize) -> Vec<([u8; 4], usize, usize)> 
             if p + 16 > end {
                 break;
             }
-            (p + 16, p + be(data, p + 8, 8) as usize)
+            match p.checked_add(be(data, p + 8, 8) as usize) {
+                Some(n) => (p + 16, n),
+                None => break,
+            }
         } else if size == 0 {
             (p + 8, end)
         } else {
-            (p + 8, p + size)
+            match p.checked_add(size) {
+                Some(n) => (p + 8, n),
+                None => break,
+            }
         };
         if next <= p || next > end {
             break;

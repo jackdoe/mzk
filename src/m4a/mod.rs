@@ -156,6 +156,22 @@ mod tests {
     }
 
     #[test]
+    fn box_size_overflow_does_not_panic() {
+        let data = match std::fs::read("tests/fixtures/mp4_box_overflow.bin") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let _ = mp4::demux(&data);
+        if let Ok(mut dec) = M4aDecoder::from_bytes(data) {
+            for _ in 0..16 {
+                if dec.next().is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fuzz_demux_and_decode_never_panic() {
         let prefixes: [&[u8]; 3] = [
             &[],

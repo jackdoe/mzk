@@ -153,22 +153,32 @@ fn fixed_restore(buf: &mut [i64], order: usize) {
         0 => {}
         1 => {
             for i in 1..n {
-                buf[i] += buf[i - 1];
+                buf[i] = buf[i].wrapping_add(buf[i - 1]);
             }
         }
         2 => {
             for i in 2..n {
-                buf[i] += 2 * buf[i - 1] - buf[i - 2];
+                let p = buf[i - 1].wrapping_mul(2).wrapping_sub(buf[i - 2]);
+                buf[i] = buf[i].wrapping_add(p);
             }
         }
         3 => {
             for i in 3..n {
-                buf[i] += 3 * buf[i - 1] - 3 * buf[i - 2] + buf[i - 3];
+                let p = buf[i - 1]
+                    .wrapping_mul(3)
+                    .wrapping_sub(buf[i - 2].wrapping_mul(3))
+                    .wrapping_add(buf[i - 3]);
+                buf[i] = buf[i].wrapping_add(p);
             }
         }
         4 => {
             for i in 4..n {
-                buf[i] += 4 * buf[i - 1] - 6 * buf[i - 2] + 4 * buf[i - 3] - buf[i - 4];
+                let p = buf[i - 1]
+                    .wrapping_mul(4)
+                    .wrapping_sub(buf[i - 2].wrapping_mul(6))
+                    .wrapping_add(buf[i - 3].wrapping_mul(4))
+                    .wrapping_sub(buf[i - 4]);
+                buf[i] = buf[i].wrapping_add(p);
             }
         }
         _ => {}
@@ -180,9 +190,9 @@ fn lpc_restore(buf: &mut [i64], coefs: &[i64], shift: i32, order: usize) {
     for i in order..n {
         let mut pred = 0i64;
         for j in 0..order {
-            pred += coefs[j] * buf[i - 1 - j];
+            pred = pred.wrapping_add(coefs[j].wrapping_mul(buf[i - 1 - j]));
         }
-        buf[i] += pred >> shift;
+        buf[i] = buf[i].wrapping_add(pred >> shift);
     }
 }
 
@@ -499,6 +509,21 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "no flac fixtures found");
+    }
+
+    #[test]
+    fn lpc_restore_overflow_does_not_panic() {
+        let data = match std::fs::read("tests/fixtures/flac_lpc_overflow.bin") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        if let Ok(mut dec) = FlacDecoder::from_bytes(data) {
+            for _ in 0..64 {
+                if dec.next().is_none() {
+                    break;
+                }
+            }
+        }
     }
 
     #[test]

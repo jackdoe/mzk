@@ -3,6 +3,10 @@ name = "mzk"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "mzk"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mzk"
 path = "src/main.rs"
