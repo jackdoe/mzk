@@ -3,7 +3,6 @@ use super::header::{get_my_sample_rate, is_mono, test_mpeg1};
 use super::tables::{SCF_LONG, SCF_MIXED, SCF_SHORT};
 
 pub const SHORT_BLOCK_TYPE: u8 = 2;
-pub const STOP_BLOCK_TYPE: u8 = 3;
 
 #[derive(Clone, Copy, Default)]
 pub struct GrInfo {

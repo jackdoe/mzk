@@ -1,10 +1,10 @@
 use super::bits::Bits;
 use super::header::{is_ms_stereo, test_i_stereo, test_mpeg1};
 use super::sideinfo::GrInfo;
-use super::tables::{POW43, SCF_PARTITIONS};
+use super::tables::SCF_PARTITIONS;
 
-const BITS_DEQUANTIZER_OUT: i32 = -1;
-const MAX_SCFI: i32 = 44;
+const BITS_DEQUANTIZER_OUT: i32 = 0;
+const MAX_SCFI: i32 = 48;
 
 fn read_scalefactors(
     scf: &mut [u8],
@@ -62,18 +62,29 @@ pub fn ldexp_q2(mut y: f32, mut exp_q2: i32) -> f32 {
     y
 }
 
-pub fn pow_43(mut x: i32) -> f32 {
-    let mut mult = 256.0f32;
-    if x < 129 {
-        return POW43[(16 + x) as usize];
+fn pow_43(x: i32) -> f32 {
+    (x as f32).powf(4.0 / 3.0)
+}
+
+pub fn requantize(is: &[i32; 576], scf: &[f32], sfbtab: &[u8], xr: &mut [f32]) {
+    let mut i = 0usize;
+    let mut band = 0usize;
+    while sfbtab[band] != 0 && i < 576 {
+        let gain = scf[band];
+        for _ in 0..sfbtab[band] {
+            let v = is[i];
+            xr[i] = if v < 0 {
+                -pow_43(-v)
+            } else {
+                pow_43(v)
+            } * gain;
+            i += 1;
+        }
+        band += 1;
     }
-    if x < 1024 {
-        mult = 16.0;
-        x <<= 3;
+    for x in xr.iter_mut().take(576).skip(i) {
+        *x = 0.0;
     }
-    let sign = 2 * x & 64;
-    let frac = ((x & 63) - sign) as f32 / ((x & !63) + sign) as f32;
-    POW43[(16 + ((x + sign) >> 6)) as usize] * (1.0 + frac * ((4.0 / 3.0) + frac * (2.0 / 9.0))) * mult
 }
 
 pub fn decode_scalefactors(

@@ -26,8 +26,8 @@ pub struct Mp3Decoder {
     free_format_bytes: usize,
     reserv: usize,
     reserv_buf: [u8; MAX_BITRESERVOIR_BYTES],
-    mdct_overlap: [[f32; 288]; 2],
-    qmf_state: [f32; 960],
+    overlap: [[f32; 576]; 2],
+    vfifo: [[f32; 1024]; 2],
     ist_pos: [[u8; 39]; 2],
     rate: u32,
     channels: usize,
@@ -77,8 +77,8 @@ impl Mp3Decoder {
             free_format_bytes: 0,
             reserv: 0,
             reserv_buf: [0; MAX_BITRESERVOIR_BYTES],
-            mdct_overlap: [[0.0; 288]; 2],
-            qmf_state: [0.0; 960],
+            overlap: [[0.0; 576]; 2],
+            vfifo: [[0.0; 1024]; 2],
             ist_pos: [[0; 39]; 2],
             rate,
             channels,
@@ -94,8 +94,8 @@ impl Mp3Decoder {
         self.header = [0; 4];
         self.free_format_bytes = 0;
         self.reserv = 0;
-        self.mdct_overlap = [[0.0; 288]; 2];
-        self.qmf_state = [0.0; 960];
+        self.overlap = [[0.0; 576]; 2];
+        self.vfifo = [[0.0; 1024]; 2];
     }
 
     fn decode_frame(&mut self) -> Option<Vec<f32>> {
@@ -173,74 +173,59 @@ impl Mp3Decoder {
         if success {
             self.ist_pos = [[0; 39]; 2];
             let mut grbuf = [0.0f32; 1152];
-            let mut lins = [0.0f32; 2112];
+            let mut is = [0i32; 576];
             for igr in 0..ngr {
-                for x in grbuf.iter_mut() {
-                    *x = 0.0;
-                }
                 let g0 = igr * channels;
-                let mut scf = [0.0f32; 40];
                 for ch in 0..channels {
-                    let limit = bs2.pos as i32 + gr_info[g0 + ch].part_23_length as i32;
-                    requant::decode_scalefactors(
-                        &h,
-                        &mut self.ist_pos[ch],
-                        &mut bs2,
-                        &gr_info[g0 + ch],
-                        &mut scf,
-                        ch,
-                    );
-                    huffman::huffman(
-                        &mut grbuf[ch * 576..ch * 576 + 576],
-                        &mut bs2,
-                        &gr_info[g0 + ch],
-                        &scf,
-                        limit,
-                    );
+                    let mut scf = [0.0f32; 40];
+                    let gi = gr_info[g0 + ch];
+                    let part_2_start = bs2.pos;
+                    requant::decode_scalefactors(&h, &mut self.ist_pos[ch], &mut bs2, &gi, &mut scf, ch);
+                    huffman::read_huffman(&mut bs2, &gi, part_2_start, &mut is);
+                    requant::requantize(&is, &scf, gi.sfbtab, &mut grbuf[ch * 576..ch * 576 + 576]);
                 }
 
                 {
-                    let (ist0, ist1) = self.ist_pos.split_at_mut(1);
-                    let _ = ist0;
+                    let (_, ist1) = self.ist_pos.split_at_mut(1);
                     stereo::apply_stereo(&mut grbuf, &mut ist1[0], &gr_info[g0..g0 + channels], &h);
                 }
 
+                let base = igr * 576 * channels;
                 for ch in 0..channels {
                     let gi = gr_info[g0 + ch];
                     let n_long_bands = (if gi.mixed_block_flag != 0 { 2 } else { 0 })
                         << (get_my_sample_rate(&h) == 2) as usize;
                     let cb = ch * 576;
-                    let aa_bands: i32;
                     if gi.n_short_sfb != 0 {
                         stereo::reorder(
                             &mut grbuf[cb..cb + 576],
                             n_long_bands * 18,
                             &gi.sfbtab[gi.n_long_sfb as usize..],
                         );
-                        aa_bands = n_long_bands as i32 - 1;
-                    } else {
-                        aa_bands = 31;
                     }
+                    let aa_bands = if gi.n_short_sfb != 0 {
+                        n_long_bands as i32 - 1
+                    } else {
+                        31
+                    };
                     if aa_bands > 0 {
                         stereo::antialias(&mut grbuf[cb..cb + 576], 0, aa_bands as usize);
                     }
-                    imdct::imdct_gr(
+                    imdct::hybrid_synthesis(
                         &mut grbuf[cb..cb + 576],
-                        &mut self.mdct_overlap[ch],
+                        &mut self.overlap[ch],
                         gi.block_type,
                         n_long_bands,
                     );
+                    imdct::frequency_inversion(&mut grbuf[cb..cb + 576]);
+                    synthesis::subband_synthesis(
+                        &grbuf[cb..cb + 576],
+                        &mut self.vfifo[ch],
+                        &mut out[base..base + 576 * channels],
+                        ch,
+                        channels,
+                    );
                 }
-
-                let base = igr * 576 * channels;
-                synthesis::synth_granule(
-                    &mut self.qmf_state,
-                    &mut grbuf,
-                    18,
-                    channels,
-                    &mut out[base..base + 576 * channels],
-                    &mut lins,
-                );
             }
         }
 
