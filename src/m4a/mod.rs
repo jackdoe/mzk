@@ -246,4 +246,55 @@ mod tests {
         }
         assert!(checked > 0, "no aac fixtures");
     }
+
+    fn drain(dec: &mut M4aDecoder, n: usize) {
+        for _ in 0..n {
+            match dec.next() {
+                Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                None => break,
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_corrupt_and_truncate_fixtures() {
+        let mut files = crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".alac.m4a");
+        files.truncate(1);
+        files.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".aac.m4a").into_iter().take(1));
+        for data in files {
+            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
+            crate::fuzz::corrupt_each(&work, 31, |c| {
+                let _ = mp4::demux(&c);
+                if let Ok(mut dec) = M4aDecoder::from_bytes(c) {
+                    drain(&mut dec, 6);
+                }
+            });
+            crate::fuzz::truncate_points(&data, 64, |t| {
+                let _ = mp4::demux(t);
+                if let Ok(mut dec) = M4aDecoder::from_bytes(t.to_vec()) {
+                    drain(&mut dec, 12);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn fuzz_seek_never_panics() {
+        let mut files = crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".alac.m4a");
+        files.truncate(1);
+        files.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".aac.m4a").into_iter().take(1));
+        for data in files {
+            if let Ok(mut dec) = M4aDecoder::from_bytes(data) {
+                for &t in &[0u64, 1, 1000, u64::MAX, u64::MAX / 2, 44100, 1 << 40, 1 << 50] {
+                    dec.seek(t);
+                    drain(&mut dec, 8);
+                }
+                for seed in 0..3000u64 {
+                    let t = u64::from_le_bytes(crate::fuzz::bytes(seed, 8).try_into().unwrap());
+                    dec.seek(t);
+                    drain(&mut dec, 4);
+                }
+            }
+        }
+    }
 }

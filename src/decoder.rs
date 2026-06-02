@@ -81,4 +81,70 @@ mod tests {
         }
         assert!(checked > 0, "no voyager fixtures");
     }
+
+    fn all_fixtures() -> Vec<Vec<u8>> {
+        let mut v = crate::fuzz::read_dir_ext("tests/fixtures", ".mp3");
+        v.extend(crate::fuzz::read_dir_ext("tests/fixtures", ".opus"));
+        for ext in [".flac", ".wav", ".alac.m4a", ".aac.m4a", ".mp3", ".opus"] {
+            v.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ext));
+        }
+        v
+    }
+
+    fn drive(mut d: Box<dyn Decoder>) {
+        let _ = (d.sample_rate(), d.channels(), d.duration_frames(), d.pos_frames());
+        for _ in 0..8 {
+            if d.next().is_none() {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn cross_format_confusion_never_panics() {
+        let fixtures = all_fixtures();
+        let fixtures = &fixtures;
+        crate::fuzz::for_seeds(fixtures.len() as u64, |i| {
+            let work: Vec<u8> = fixtures[i as usize].iter().take(64 * 1024).copied().collect();
+            if let Ok(d) = crate::mp3::Mp3Decoder::from_bytes(work.clone()) {
+                drive(Box::new(d));
+            }
+            if let Ok(d) = crate::wav::WavDecoder::from_bytes(work.clone()) {
+                drive(Box::new(d));
+            }
+            if let Ok(d) = crate::flac::FlacDecoder::from_bytes(work.clone()) {
+                drive(Box::new(d));
+            }
+            if let Ok(d) = crate::m4a::M4aDecoder::from_bytes(work.clone()) {
+                drive(Box::new(d));
+            }
+            if let Ok(d) = crate::opus::OpusDecoder::from_bytes(&work) {
+                drive(Box::new(d));
+            }
+        });
+    }
+
+    #[test]
+    fn degenerate_inputs_never_panic() {
+        let cases: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0],
+            vec![0xff],
+            vec![0xff; 3],
+            vec![0xff; 4],
+            b"RIFF".to_vec(),
+            b"fLaC".to_vec(),
+            b"OggS".to_vec(),
+            b"RIFFWAVE".to_vec(),
+            vec![0x00; 4096],
+            vec![0xff; 4096],
+        ];
+        for c in cases {
+            let _ = crate::mp3::Mp3Decoder::from_bytes(c.clone());
+            let _ = crate::wav::WavDecoder::from_bytes(c.clone());
+            let _ = crate::flac::FlacDecoder::from_bytes(c.clone());
+            let _ = crate::m4a::M4aDecoder::from_bytes(c.clone());
+            let _ = crate::opus::OpusDecoder::from_bytes(&c);
+        }
+    }
 }

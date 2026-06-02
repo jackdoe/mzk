@@ -279,4 +279,108 @@ mod tests {
         sep.extend(decode_frame(&mut b, &mode, f1, lm, end, toc.stereo));
         assert_eq!(packed, sep);
     }
+
+    fn drain(dec: &mut OpusDecoder, n: usize) {
+        for _ in 0..n {
+            match dec.next() {
+                Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                None => break,
+            }
+        }
+    }
+
+    fn ogg_page(htype: u8, granule: i64, seq: u32, packets: &[&[u8]]) -> Vec<u8> {
+        let mut segs = Vec::new();
+        let mut body = Vec::new();
+        for p in packets {
+            let mut l = p.len();
+            while l >= 255 {
+                segs.push(255u8);
+                l -= 255;
+            }
+            segs.push(l as u8);
+            body.extend_from_slice(p);
+        }
+        let mut v = b"OggS".to_vec();
+        v.push(0);
+        v.push(htype);
+        v.extend_from_slice(&granule.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&seq.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.push(segs.len() as u8);
+        v.extend_from_slice(&segs);
+        v.extend_from_slice(&body);
+        v
+    }
+
+    fn opus_head(channels: u8) -> Vec<u8> {
+        let mut h = b"OpusHead".to_vec();
+        h.push(1);
+        h.push(channels);
+        h.extend_from_slice(&312u16.to_le_bytes());
+        h.extend_from_slice(&48000u32.to_le_bytes());
+        h.extend_from_slice(&0i16.to_le_bytes());
+        h.push(0);
+        h
+    }
+
+    #[test]
+    fn fuzz_synthetic_stream_frames() {
+        let tags = b"OpusTags\0\0\0\0";
+        for channels in [1u8, 2] {
+            let head = opus_head(channels);
+            let head = &head;
+            crate::fuzz::for_seeds(4000, |seed| {
+                let alen = 1 + (seed as usize % 250);
+                let audio = crate::fuzz::bytes(seed, alen);
+                let pkts: [&[u8]; 3] = [head, tags, &audio];
+                let stream = ogg_page(0x02, 960, 0, &pkts);
+                if let Ok(mut dec) = OpusDecoder::from_bytes(&stream) {
+                    drain(&mut dec, 4);
+                }
+            });
+        }
+    }
+
+    fn opus_fixtures() -> Vec<Vec<u8>> {
+        let mut v = crate::fuzz::read_dir_ext("tests/fixtures", ".opus");
+        v.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".opus"));
+        v.truncate(2);
+        v
+    }
+
+    #[test]
+    fn fuzz_corrupt_and_truncate_fixtures() {
+        for data in opus_fixtures() {
+            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
+            crate::fuzz::corrupt_each(&work, 31, |c| {
+                if let Ok(mut dec) = OpusDecoder::from_bytes(&c) {
+                    drain(&mut dec, 6);
+                }
+            });
+            crate::fuzz::truncate_points(&data, 64, |t| {
+                if let Ok(mut dec) = OpusDecoder::from_bytes(t) {
+                    drain(&mut dec, 8);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn fuzz_seek_never_panics() {
+        for data in opus_fixtures() {
+            if let Ok(mut dec) = OpusDecoder::from_bytes(&data) {
+                for &t in &[0u64, 1, 1000, u64::MAX, u64::MAX / 2, 48000, 1 << 40, 1 << 50] {
+                    dec.seek(t);
+                    drain(&mut dec, 8);
+                }
+                for seed in 0..2000u64 {
+                    let t = u64::from_le_bytes(crate::fuzz::bytes(seed, 8).try_into().unwrap());
+                    dec.seek(t);
+                    drain(&mut dec, 4);
+                }
+            }
+        }
+    }
 }

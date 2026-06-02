@@ -432,4 +432,84 @@ mod tests {
             }
         });
     }
+
+    fn drain(dec: &mut Mp3Decoder, n: usize) {
+        for _ in 0..n {
+            match dec.next() {
+                Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                None => break,
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_header_mode_sweep() {
+        let h1s = [0xFBu8, 0xF3, 0xE3, 0xFA, 0xF2, 0xE2, 0xFD, 0xF5];
+        crate::fuzz::for_seeds(256, |h3| {
+            for &h1 in &h1s {
+                for seed in 0..3u64 {
+                    let body = crate::fuzz::bytes(seed.wrapping_add(h3 * 7), 700);
+                    let mut f = vec![0xFF, h1, 0x90, h3 as u8];
+                    f.extend_from_slice(&body);
+                    if let Ok(mut dec) = Mp3Decoder::from_bytes(f) {
+                        drain(&mut dec, 8);
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_header_byte2_sweep() {
+        crate::fuzz::for_seeds(256, |h2| {
+            for h3 in [0x00u8, 0x40, 0x60, 0x80, 0xC0, 0xD0, 0xE0, 0xF0] {
+                for seed in 0..3u64 {
+                    let body = crate::fuzz::bytes(seed.wrapping_add(h2), 600);
+                    let mut f = vec![0xFF, 0xFB, h2 as u8, h3];
+                    f.extend_from_slice(&body);
+                    if let Ok(mut dec) = Mp3Decoder::from_bytes(f) {
+                        drain(&mut dec, 8);
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_corrupt_fixtures() {
+        let mut files = crate::fuzz::read_dir_ext("tests/fixtures", ".mp3");
+        files.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".mp3"));
+        for data in files {
+            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
+            crate::fuzz::corrupt_each(&work, 29, |c| {
+                if let Ok(mut dec) = Mp3Decoder::from_bytes(c) {
+                    drain(&mut dec, 8);
+                }
+            });
+            crate::fuzz::truncate_points(&data, 64, |t| {
+                if let Ok(mut dec) = Mp3Decoder::from_bytes(t.to_vec()) {
+                    drain(&mut dec, 8);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn fuzz_seek_never_panics() {
+        let mut files = crate::fuzz::read_dir_ext("tests/fixtures", ".mp3");
+        files.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".mp3"));
+        for data in files {
+            if let Ok(mut dec) = Mp3Decoder::from_bytes(data) {
+                for &t in &[0u64, 1, 7, 1000, u64::MAX, u64::MAX / 2, 48000, 999999999] {
+                    dec.seek(t);
+                    drain(&mut dec, 8);
+                }
+                for seed in 0..3000u64 {
+                    let t = u64::from_le_bytes(crate::fuzz::bytes(seed, 8).try_into().unwrap());
+                    dec.seek(t);
+                    drain(&mut dec, 4);
+                }
+            }
+        }
+    }
 }

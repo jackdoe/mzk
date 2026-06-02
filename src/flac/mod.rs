@@ -531,4 +531,84 @@ mod tests {
             }
         });
     }
+
+    fn drain(dec: &mut FlacDecoder, n: usize) {
+        for _ in 0..n {
+            match dec.next() {
+                Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                None => break,
+            }
+        }
+    }
+
+    fn streaminfo(rate: u32, channels: u64, bps: u64, total: u64) -> Vec<u8> {
+        let mut v = b"fLaC".to_vec();
+        v.push(0x80);
+        v.extend_from_slice(&[0, 0, 34]);
+        let mut body = vec![0u8; 34];
+        let packed: u64 = ((rate as u64 & 0xFFFFF) << 44)
+            | ((channels.wrapping_sub(1) & 0x7) << 41)
+            | ((bps.wrapping_sub(1) & 0x1F) << 36)
+            | (total & 0xF_FFFF_FFFF);
+        body[10..18].copy_from_slice(&packed.to_be_bytes());
+        v.extend_from_slice(&body);
+        v
+    }
+
+    #[test]
+    fn fuzz_streaminfo_and_frame_sweep() {
+        let rates = [0u32, 1, 44100, 0xFFFFF];
+        let chans = [0u64, 1, 2, 8, 9, 255];
+        let bpss = [0u64, 1, 16, 32, 33, 255];
+        crate::fuzz::for_seeds((rates.len() * chans.len() * bpss.len()) as u64, |idx| {
+            let idx = idx as usize;
+            let rate = rates[idx % rates.len()];
+            let ch = chans[(idx / rates.len()) % chans.len()];
+            let bps = bpss[(idx / (rates.len() * chans.len())) % bpss.len()];
+            let head = streaminfo(rate, ch, bps, 1000);
+            for seed in 0..24u64 {
+                let mut f = head.clone();
+                f.push(0xFF);
+                f.push(0xF8);
+                f.extend_from_slice(&crate::fuzz::bytes(seed, 400));
+                if let Ok(mut dec) = FlacDecoder::from_bytes(f) {
+                    drain(&mut dec, 4);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_corrupt_and_truncate_fixtures() {
+        for data in crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".flac").into_iter().take(1) {
+            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
+            crate::fuzz::corrupt_each(&work, 31, |c| {
+                if let Ok(mut dec) = FlacDecoder::from_bytes(c) {
+                    drain(&mut dec, 6);
+                }
+            });
+            crate::fuzz::truncate_points(&data, 64, |t| {
+                if let Ok(mut dec) = FlacDecoder::from_bytes(t.to_vec()) {
+                    drain(&mut dec, 8);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn fuzz_seek_never_panics() {
+        for data in crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".flac") {
+            if let Ok(mut dec) = FlacDecoder::from_bytes(data) {
+                for &t in &[0u64, 1, 1000, u64::MAX, u64::MAX / 2, 44100, 1 << 40] {
+                    dec.seek(t);
+                    drain(&mut dec, 6);
+                }
+                for seed in 0..400u64 {
+                    let t = u64::from_le_bytes(crate::fuzz::bytes(seed, 8).try_into().unwrap()) % 60000;
+                    dec.seek(t);
+                    drain(&mut dec, 4);
+                }
+            }
+        }
+    }
 }

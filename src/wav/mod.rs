@@ -230,5 +230,87 @@ mod tests {
             }
         });
     }
+
+    fn build_wav(format: u16, channels: u16, rate: u32, bits: u16, data_len: usize) -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&format.to_le_bytes());
+        fmt.extend_from_slice(&channels.to_le_bytes());
+        fmt.extend_from_slice(&rate.to_le_bytes());
+        fmt.extend_from_slice(&0u32.to_le_bytes());
+        fmt.extend_from_slice(&0u16.to_le_bytes());
+        fmt.extend_from_slice(&bits.to_le_bytes());
+        let mut v = b"RIFF".to_vec();
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        v.extend_from_slice(&fmt);
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(data_len as u32).to_le_bytes());
+        v.extend_from_slice(&crate::fuzz::bytes(format as u64 ^ (bits as u64) << 8, data_len));
+        v
+    }
+
+    #[test]
+    fn fuzz_format_sweep() {
+        for format in [0u16, 1, 2, 3, 6, 7, 0xFFFE] {
+            for bits in [0u16, 1, 4, 7, 8, 12, 16, 20, 24, 32, 33, 48, 64, 65, 255] {
+                for channels in [0u16, 1, 2, 3, 8, 255, 65535] {
+                    for data_len in [0usize, 1, 3, 7, 16, 100, 999] {
+                        let w = build_wav(format, channels, 44100, bits, data_len);
+                        if let Ok(mut dec) = WavDecoder::from_bytes(w) {
+                            for _ in 0..32 {
+                                if dec.next().is_none() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_corrupt_and_truncate_fixtures() {
+        for data in crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".wav").into_iter().take(1) {
+            let work: Vec<u8> = data.iter().take(24 * 1024).copied().collect();
+            crate::fuzz::corrupt_each(&work, 13, |c| {
+                if let Ok(mut dec) = WavDecoder::from_bytes(c) {
+                    for _ in 0..16 {
+                        if dec.next().is_none() {
+                            break;
+                        }
+                    }
+                }
+            });
+            crate::fuzz::truncate_points(&data, 64, |t| {
+                if let Ok(mut dec) = WavDecoder::from_bytes(t.to_vec()) {
+                    for _ in 0..16 {
+                        if dec.next().is_none() {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn fuzz_seek_never_panics() {
+        for data in crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".wav") {
+            if let Ok(mut dec) = WavDecoder::from_bytes(data) {
+                for seed in 0..5000u64 {
+                    let t = u64::from_le_bytes(crate::fuzz::bytes(seed, 8).try_into().unwrap());
+                    dec.seek(t);
+                    for _ in 0..6 {
+                        if dec.next().is_none() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
