@@ -14,6 +14,11 @@ mod wav;
 #[cfg(test)]
 mod fuzz;
 
+fn usage() -> ! {
+    eprintln!("usage: mzk [-s off|on|fav] [-v 0-100] [-r off|one|all] FILE...");
+    std::process::exit(2);
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--bench") {
@@ -21,12 +26,38 @@ fn main() {
         bench(args.into_iter().map(Into::into).collect());
         return;
     }
-    let files: Vec<std::path::PathBuf> = args.into_iter().map(Into::into).collect();
-    if files.is_empty() {
-        eprintln!("usage: mzk FILE.opus...");
-        std::process::exit(2);
+
+    let mut settings = engine::Settings::default();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-s" | "--shuffle" => match it.next().as_deref() {
+                Some("off") => settings.shuffle = false,
+                Some("on") => settings.shuffle = true,
+                Some("fav") => {
+                    settings.shuffle = true;
+                    settings.fav_only = true;
+                }
+                _ => usage(),
+            },
+            "-v" | "--vol" => match it.next().and_then(|v| v.parse::<f32>().ok()) {
+                Some(p) => settings.vol = (p / 100.0).clamp(0.0, 1.0),
+                None => usage(),
+            },
+            "-r" | "--repeat" => match it.next().as_deref() {
+                Some("off") => settings.repeat = engine::Repeat::Off,
+                Some("one") => settings.repeat = engine::Repeat::One,
+                Some("all") => settings.repeat = engine::Repeat::All,
+                _ => usage(),
+            },
+            _ => files.push(a.into()),
+        }
     }
-    match engine::Engine::spawn(files.clone()) {
+    if files.is_empty() {
+        usage();
+    }
+    match engine::Engine::spawn(files.clone(), settings) {
         Ok(eng) => repl::run(eng, files),
         Err(e) => {
             eprintln!("mzk: {e}");

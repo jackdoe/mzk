@@ -48,6 +48,7 @@ pub fn fmt_label(name: &str, ext: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn fmt_np(
     index: usize,
     name: &str,
@@ -58,24 +59,34 @@ pub fn fmt_np(
     total: u64,
     vol: f32,
     shuffle: bool,
+    fav_only: bool,
+    favorite: bool,
     repeat: &str,
 ) -> String {
     let bar = fmt_bar(pos, total, 10);
     let vol_pct = (vol * 100.0).round() as i64;
-    let shuf = if shuffle { "shuf+" } else { "shuf-" };
+    let shuf = if !shuffle {
+        "shuf-"
+    } else if fav_only {
+        "shuf*"
+    } else {
+        "shuf+"
+    };
+    let fav = if favorite { "fav+" } else { "fav-" };
     let info = if rate > 0 {
         format!("{} {}ch  ", fmt_rate(rate), channels)
     } else {
         String::new()
     };
     let tail = format!(
-        "{} {}/{}  {}vol{} {} rep{}",
+        "{} {}/{}  {}vol{} {} {} rep{}",
         bar,
         fmt_time(pos),
         fmt_time(total),
         info,
         vol_pct,
         shuf,
+        fav,
         repeat_flag(repeat)
     );
     let head = format!("{:02}  ", index);
@@ -105,6 +116,8 @@ pub enum Parsed {
     SeekTo(u64),
     Shuffle(bool),
     ShuffleToggle,
+    ShuffleFav,
+    ToggleFavorite,
     Repeat(String),
     RepeatCycle,
     Help,
@@ -160,9 +173,11 @@ pub fn parse(line: &str) -> Option<Parsed> {
         "shuffle" | "s" => match a {
             Some("on") => Some(Parsed::Shuffle(true)),
             Some("off") => Some(Parsed::Shuffle(false)),
+            Some("fav") | Some("favs") => Some(Parsed::ShuffleFav),
             None => Some(Parsed::ShuffleToggle),
             _ => None,
         },
+        "f" | "fav" => Some(Parsed::ToggleFavorite),
         "repeat" | "r" => match a {
             Some("off") | Some("one") | Some("all") => Some(Parsed::Repeat(a?.to_string())),
             None => Some(Parsed::RepeatCycle),
@@ -196,15 +211,20 @@ mod tests {
 
     #[test]
     fn np() {
-        let s = fmt_np(2, "aurora", "flac", 44100, 2, 151, 291, 0.7, true, "off");
+        let s = fmt_np(2, "aurora", "flac", 44100, 2, 151, 291, 0.7, true, false, true, "off");
         assert!(s.len() <= 79);
         assert!(s.contains("2:31/4:51"));
         assert!(s.contains("aurora.flac"));
         assert!(s.contains("44.1k 2ch"));
-        let long = fmt_np(2, &"x".repeat(200), "opus", 48000, 2, 151, 291, 0.7, true, "off");
+        assert!(s.contains("shuf+"));
+        assert!(s.contains("fav+"));
+        let favmode = fmt_np(2, "aurora", "flac", 44100, 2, 0, 291, 0.7, true, true, false, "off");
+        assert!(favmode.contains("shuf*"));
+        assert!(favmode.contains("fav-"));
+        let long = fmt_np(2, &"x".repeat(200), "opus", 48000, 2, 151, 291, 0.7, true, false, false, "off");
         assert!(long.len() <= 79);
         assert!(long.contains("48k 2ch"));
-        let no_track = fmt_np(1, "song", "mp3", 0, 0, 0, 0, 1.0, false, "all");
+        let no_track = fmt_np(1, "song", "mp3", 0, 0, 0, 0, 1.0, false, false, false, "all");
         assert!(no_track.contains("song.mp3"));
         assert!(!no_track.contains("0ch"));
     }
@@ -267,6 +287,10 @@ mod tests {
         assert_eq!(parse("r one"), Some(Parsed::Repeat("one".into())));
         assert_eq!(parse("?"), Some(Parsed::Help));
         assert_eq!(parse("h"), Some(Parsed::Help));
+        assert_eq!(parse("f"), Some(Parsed::ToggleFavorite));
+        assert_eq!(parse("fav"), Some(Parsed::ToggleFavorite));
+        assert_eq!(parse("s fav"), Some(Parsed::ShuffleFav));
+        assert_eq!(parse("shuffle fav"), Some(Parsed::ShuffleFav));
     }
 
     #[test]

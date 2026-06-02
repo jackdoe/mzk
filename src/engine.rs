@@ -2,7 +2,8 @@ use crate::audio::PlatformSink;
 use crate::decoder::{open, Decoder};
 use crate::error::Result;
 use crate::pcm::Ring;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -17,6 +18,25 @@ pub enum Repeat {
     All,
 }
 
+#[derive(Clone, Copy)]
+pub struct Settings {
+    pub shuffle: bool,
+    pub fav_only: bool,
+    pub vol: f32,
+    pub repeat: Repeat,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            shuffle: false,
+            fav_only: false,
+            vol: 1.0,
+            repeat: Repeat::All,
+        }
+    }
+}
+
 pub enum Command {
     Play(usize),
     Pause,
@@ -27,6 +47,8 @@ pub enum Command {
     Seek(i64),
     SeekTo(u64),
     Shuffle(bool),
+    ShuffleFavorites,
+    ToggleFavorite,
     Repeat(Repeat),
     Quit,
 }
@@ -42,6 +64,8 @@ pub struct Status {
     pub total: u64,
     pub vol: f32,
     pub shuffle: bool,
+    pub fav_only: bool,
+    pub favorite: bool,
     pub repeat: Repeat,
     pub paused: bool,
     pub ended: bool,
@@ -57,10 +81,10 @@ pub struct Engine {
 
 impl Engine {
     pub fn names(playlist: &[PathBuf]) -> Vec<String> {
-        playlist.iter().map(|p| track_name(p)).collect()
+        playlist.iter().map(|p| track_label(p)).collect()
     }
 
-    pub fn spawn(playlist: Vec<PathBuf>) -> Result<Engine> {
+    pub fn spawn(playlist: Vec<PathBuf>, settings: Settings) -> Result<Engine> {
         let first = playlist.first().map(|p| track_name(p)).unwrap_or_default();
         let first_ext = playlist.first().map(|p| track_ext(p)).unwrap_or_default();
         let status = Arc::new(Mutex::new(Status {
@@ -71,9 +95,11 @@ impl Engine {
             channels: 0,
             pos: 0,
             total: 0,
-            vol: 1.0,
-            shuffle: false,
-            repeat: Repeat::All,
+            vol: settings.vol,
+            shuffle: settings.shuffle,
+            fav_only: settings.fav_only,
+            favorite: false,
+            repeat: settings.repeat,
             paused: false,
             ended: false,
         }));
@@ -81,7 +107,7 @@ impl Engine {
         let st = status.clone();
         let acked = Arc::new(AtomicU64::new(0));
         let ack = acked.clone();
-        let handle = std::thread::spawn(move || run(playlist, rx, st, ack));
+        let handle = std::thread::spawn(move || run(playlist, settings, rx, st, ack));
         Ok(Engine {
             tx,
             status,
@@ -128,6 +154,15 @@ fn track_ext(p: &std::path::Path) -> String {
     p.extension()
         .map(|s| s.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+fn track_label(p: &std::path::Path) -> String {
+    let ext = track_ext(p);
+    if ext.is_empty() {
+        track_name(p)
+    } else {
+        format!("{}.{}", track_name(p), ext)
+    }
 }
 
 fn next_rand(state: &mut u64) -> f64 {
@@ -177,6 +212,76 @@ fn shuffle_order(playlist: &[PathBuf], seed: u64) -> Vec<usize> {
     placed.into_iter().map(|(_, i)| i).collect()
 }
 
+fn fav_store_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("mzk").join("favorites"))
+}
+
+fn load_favorites() -> HashSet<PathBuf> {
+    let mut set = HashSet::new();
+    if let Some(p) = fav_store_path() {
+        if let Ok(s) = std::fs::read_to_string(p) {
+            for line in s.lines() {
+                let l = line.trim();
+                if !l.is_empty() {
+                    set.insert(PathBuf::from(l));
+                }
+            }
+        }
+    }
+    set
+}
+
+fn save_favorites(favorites: &HashSet<PathBuf>) {
+    if let Some(p) = fav_store_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut out = String::new();
+        for path in favorites {
+            out.push_str(&path.to_string_lossy());
+            out.push('\n');
+        }
+        let _ = std::fs::write(p, out);
+    }
+}
+
+fn canon_path(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+fn seed_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1)
+}
+
+fn build_order(
+    playlist: &[PathBuf],
+    canon: &[PathBuf],
+    favorites: &HashSet<PathBuf>,
+    shuffle: bool,
+    fav_only: bool,
+    seed: u64,
+) -> Vec<usize> {
+    let n = playlist.len();
+    let base: Vec<usize> = if shuffle {
+        shuffle_order(playlist, seed)
+    } else {
+        (0..n).collect()
+    };
+    if fav_only {
+        base.into_iter()
+            .filter(|&i| favorites.contains(&canon[i]))
+            .collect()
+    } else {
+        base
+    }
+}
+
 type Track = Box<dyn Decoder>;
 
 fn format_of(track: &Option<Track>) -> (u32, u32) {
@@ -209,28 +314,39 @@ fn reopen_sink(
     true
 }
 
-fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>, acked: Arc<AtomicU64>) {
+fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status: Arc<Mutex<Status>>, acked: Arc<AtomicU64>) {
     let ring = Ring::new(RING_CAP);
     let writer = ring.writer();
     let mut consumed: u64 = 0;
 
     let n = playlist.len();
-    let mut order: Vec<usize> = (0..n).collect();
-    let mut order_pos = 0usize;
-    let mut shuffle = false;
-    let mut repeat = Repeat::All;
-    let mut vol = 1.0f32;
+    let canon: Vec<PathBuf> = playlist.iter().map(|p| canon_path(p)).collect();
+    let mut favorites = load_favorites();
+    let mut shuffle = settings.shuffle;
+    let mut fav_only = settings.fav_only;
+    let mut seed = seed_now();
+    let mut repeat = settings.repeat;
+    let mut vol = settings.vol;
     let mut paused = false;
     let mut shown_idx = usize::MAX;
 
+    let mut order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
+    if fav_only && order.is_empty() {
+        eprintln!("mzk: no favorites among loaded tracks");
+        fav_only = false;
+        order = build_order(&playlist, &canon, &favorites, shuffle, false, seed);
+    }
+    let mut order_pos = 0usize;
+
     let mut track = open_index(&playlist, order[order_pos], &status);
-    update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, 0, &mut shown_idx);
+    update_status(&status, &playlist, &canon, &favorites, &order, order_pos, &track, vol, shuffle, fav_only, repeat, paused, 0, &mut shown_idx);
 
     let mut cur_format = format_of(&track);
     let mut sink = PlatformSink::new(ring.reader(), cur_format.0, cur_format.1);
     if let Err(e) = sink.start() {
         eprintln!("mzk: audio unavailable: {e}");
     }
+    sink.set_volume(vol);
 
     let mut pending: Vec<f32> = Vec::new();
     let mut pushed: u64 = 0;
@@ -258,20 +374,43 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                 Command::Shuffle(on) => {
                     let cur = order.get(order_pos).copied().unwrap_or(0);
                     shuffle = on;
-                    order = if on {
-                        let seed = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_nanos() as u64)
-                            .unwrap_or(1);
-                        shuffle_order(&playlist, seed)
-                    } else {
-                        (0..n).collect()
-                    };
+                    fav_only = false;
+                    seed = seed_now();
+                    order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
                     order_pos = order.iter().position(|&x| x == cur).unwrap_or(0);
+                }
+                Command::ShuffleFavorites => {
+                    if !canon.iter().any(|p| favorites.contains(p)) {
+                        eprintln!("mzk: no favorites among loaded tracks");
+                    } else {
+                        let cur = order.get(order_pos).copied().unwrap_or(0);
+                        shuffle = true;
+                        fav_only = true;
+                        seed = seed_now();
+                        order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
+                        order_pos = order.iter().position(|&x| x == cur).unwrap_or(0);
+                    }
+                }
+                Command::ToggleFavorite => {
+                    let idx = order.get(order_pos).copied().unwrap_or(0);
+                    let key = canon[idx].clone();
+                    if !favorites.remove(&key) {
+                        favorites.insert(key);
+                    }
+                    save_favorites(&favorites);
+                    if fav_only {
+                        let cur = order.get(order_pos).copied().unwrap_or(0);
+                        order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
+                        if order.is_empty() {
+                            fav_only = false;
+                            order = build_order(&playlist, &canon, &favorites, shuffle, false, seed);
+                        }
+                        order_pos = order.iter().position(|&x| x == cur).unwrap_or(0);
+                    }
                 }
                 Command::Repeat(r) => repeat = r,
                 Command::Next => {
-                    advance(&mut order_pos, n, repeat, 1);
+                    advance(&mut order_pos, order.len(), repeat, 1);
                     track = open_index(&playlist, order[order_pos], &status);
                     reopen_sink(&mut sink, &ring, &mut cur_format, &track);
                     pending.clear();
@@ -280,7 +419,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                     pushed = 0;
                 }
                 Command::Prev => {
-                    advance(&mut order_pos, n, repeat, -1);
+                    advance(&mut order_pos, order.len(), repeat, -1);
                     track = open_index(&playlist, order[order_pos], &status);
                     reopen_sink(&mut sink, &ring, &mut cur_format, &track);
                     pending.clear();
@@ -344,7 +483,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                         }
                         None => {
                             let last = order_pos;
-                            advance(&mut order_pos, n, repeat, 1);
+                            advance(&mut order_pos, order.len(), repeat, 1);
                             if repeat == Repeat::Off && order_pos == last {
                                 track = None;
                                 set_ended(&status);
@@ -372,7 +511,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
             }
         }
 
-        update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, consumed_samples, &mut shown_idx);
+        update_status(&status, &playlist, &canon, &favorites, &order, order_pos, &track, vol, shuffle, fav_only, repeat, paused, consumed_samples, &mut shown_idx);
         acked.store(consumed, Ordering::Release);
 
         if !worked {
@@ -415,14 +554,18 @@ fn set_ended(status: &Arc<Mutex<Status>>) {
     status.lock().unwrap().ended = true;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_status(
     status: &Arc<Mutex<Status>>,
     playlist: &[PathBuf],
+    canon: &[PathBuf],
+    favorites: &HashSet<PathBuf>,
     order: &[usize],
     order_pos: usize,
     track: &Option<Track>,
     vol: f32,
     shuffle: bool,
+    fav_only: bool,
     repeat: Repeat,
     paused: bool,
     consumed_samples: u64,
@@ -437,8 +580,10 @@ fn update_status(
         s.ext = track_ext(p);
         *shown_idx = idx;
     }
+    s.favorite = canon.get(idx).map(|p| favorites.contains(p)).unwrap_or(false);
     s.vol = vol;
     s.shuffle = shuffle;
+    s.fav_only = fav_only;
     s.repeat = repeat;
     s.paused = paused;
     if let Some(t) = track {

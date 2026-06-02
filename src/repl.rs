@@ -2,6 +2,7 @@ use crate::engine::{Command, Engine, Repeat};
 use crate::repl_fmt::{fmt_label, fmt_np, fmt_rate, fmt_time, parse, Parsed};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 fn repeat_word(r: Repeat) -> &'static str {
     match r {
@@ -25,6 +26,8 @@ fn print_np(eng: &Engine) {
             s.total,
             s.vol,
             s.shuffle,
+            s.fav_only,
+            s.favorite,
             repeat_word(s.repeat)
         )
     );
@@ -60,7 +63,8 @@ fn help() {
         ("p", "prev", "skip to previous track"),
         ("v", "vol <0-100|+n|-n>", "set or adjust volume percent"),
         ("k", "seek <m:ss|+n|-n>", "jump to a time, or by n seconds"),
-        ("s", "shuffle [on|off]", "toggle, or set, shuffle order"),
+        ("s", "shuffle [on|off|fav]", "toggle/set shuffle; 'fav' = favorites only"),
+        ("f", "fav", "toggle favorite for the current song"),
         ("r", "repeat [off|one|all]", "cycle, or set, repeat mode"),
         ("q", "quit", "quit mzk"),
     ];
@@ -72,6 +76,12 @@ fn help() {
 pub fn run(eng: Engine, names: Vec<PathBuf>) {
     let names = Engine::names(&names);
     println!("mzk: {} tracks. type 'help' or '?'.", names.len());
+    for _ in 0..200 {
+        if eng.status().rate > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
     print_np(&eng);
     let stdin = std::io::stdin();
     loop {
@@ -147,6 +157,16 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
                 let on = !eng.status().shuffle;
                 eng.send(Command::Shuffle(on));
                 println!("shuffle {}", if on { "on" } else { "off" });
+            }
+            Parsed::ShuffleFav => {
+                eng.send(Command::ShuffleFavorites);
+                let s = eng.sync();
+                println!("shuffle {}", if s.fav_only { "favorites" } else { "(no favorites loaded)" });
+            }
+            Parsed::ToggleFavorite => {
+                eng.send(Command::ToggleFavorite);
+                let s = eng.sync();
+                println!("{} {}", if s.favorite { "favorited" } else { "unfavorited" }, fmt_label(&s.name, &s.ext));
             }
             Parsed::RepeatCycle => {
                 let next = match eng.status().repeat {
