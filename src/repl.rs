@@ -192,14 +192,20 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
 }
 
 fn announce(eng: &Engine) {
-    let s = eng.sync();
+    let mut s = eng.sync();
+    for _ in 0..250 {
+        if s.rate > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+        s = eng.status();
+    }
     let label = fmt_label(&truncate(&s.name, 40), &s.ext);
-    let info = if s.rate > 0 {
-        format!("  {} {}ch", fmt_rate(s.rate), s.channels)
+    if s.rate > 0 {
+        println!(">> now {:>2}  {}  {}  {} {}ch", s.index + 1, label, fmt_time(s.total), fmt_rate(s.rate), s.channels);
     } else {
-        String::new()
-    };
-    println!(">> now {:>2}  {}  {}{}", s.index + 1, label, fmt_time(s.total), info);
+        println!(">> now {:>2}  {}", s.index + 1, label);
+    }
 }
 
 fn truncate(s: &str, n: usize) -> String {

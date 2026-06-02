@@ -73,10 +73,13 @@ impl Writer {
     }
 
     pub fn available(&self) -> usize {
-        let cap = self.shared.buf.len();
+        self.shared.buf.len() - self.len()
+    }
+
+    pub fn len(&self) -> usize {
         let head = self.shared.head.load(Ordering::Relaxed);
         let tail = self.shared.tail.load(Ordering::Acquire);
-        cap - head.wrapping_sub(tail)
+        head.wrapping_sub(tail)
     }
 
     pub fn clear(&self) {

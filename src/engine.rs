@@ -362,6 +362,7 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
 
     loop {
         let mut quit = false;
+        let mut switch = false;
         while let Ok(cmd) = rx.try_recv() {
             consumed += 1;
             match cmd {
@@ -416,32 +417,18 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
                 Command::Repeat(r) => repeat = r,
                 Command::Next => {
                     advance(&mut order_pos, order.len(), repeat, 1);
-                    track = open_index(&playlist, order[order_pos], &status);
-                    reopen_sink(&mut sink, &ring, &mut cur_format, &track);
-                    pending.clear();
-                    writer.clear();
-                    sink.flush();
-                    pushed = 0;
+                    switch = true;
                 }
                 Command::Prev => {
                     advance(&mut order_pos, order.len(), repeat, -1);
-                    track = open_index(&playlist, order[order_pos], &status);
-                    reopen_sink(&mut sink, &ring, &mut cur_format, &track);
-                    pending.clear();
-                    writer.clear();
-                    sink.flush();
-                    pushed = 0;
+                    switch = true;
                 }
                 Command::Play(i) => {
                     if i < n {
                         order_pos = order.iter().position(|&x| x == i).unwrap_or(0);
-                        track = open_index(&playlist, order[order_pos], &status);
-                        reopen_sink(&mut sink, &ring, &mut cur_format, &track);
-                        pending.clear();
-                        writer.clear();
-                        sink.flush();
-                        pushed = 0;
                         paused = false;
+                        sink.set_paused(false);
+                        switch = true;
                     }
                 }
                 Command::SeekTo(secs) => {
@@ -474,8 +461,29 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
             break;
         }
 
-        let fill = (RING_CAP - writer.available()) as u64;
+        if switch {
+            track = None;
+            pending.clear();
+            writer.clear();
+            sink.flush();
+            pushed = 0;
+            let mut s = status.lock().unwrap();
+            s.rate = 0;
+            s.channels = 0;
+            s.pos = 0;
+            s.total = 0;
+            s.ended = false;
+        }
+
+        let fill = writer.len() as u64;
         let consumed_samples = pushed.saturating_sub(fill);
+        update_status(&status, &playlist, &canon, &favorites, &order, order_pos, &track, vol, shuffle, fav_only, repeat, paused, consumed_samples, &mut shown_idx);
+        acked.store(consumed, Ordering::Release);
+
+        if switch {
+            track = open_index(&playlist, order[order_pos], &status);
+            reopen_sink(&mut sink, &ring, &mut cur_format, &track);
+        }
 
         let mut worked = false;
         if !paused {
@@ -515,9 +523,6 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
                 }
             }
         }
-
-        update_status(&status, &playlist, &canon, &favorites, &order, order_pos, &track, vol, shuffle, fav_only, repeat, paused, consumed_samples, &mut shown_idx);
-        acked.store(consumed, Ordering::Release);
 
         if !worked {
             std::thread::sleep(Duration::from_millis(8));
@@ -629,6 +634,25 @@ mod tests {
             }
         }
         assert_eq!(adjacent, 0, "same-artist tracks clustered: {arts:?}");
+    }
+
+    #[test]
+    fn next_is_visible_in_status_after_sync() {
+        let fixtures = ["tests/fixtures/tiny.opus", "tests/fixtures/tiny.mp3"];
+        if fixtures.iter().any(|f| !std::path::Path::new(f).exists()) {
+            return;
+        }
+        let pl: Vec<PathBuf> = fixtures.iter().map(PathBuf::from).collect();
+        let eng = Engine::spawn(pl, Settings::default()).unwrap();
+        eng.send(Command::Next);
+        let s = eng.sync();
+        assert_eq!(s.index, 1, "status must reflect Next before announce");
+        assert_eq!(s.name, "tiny");
+        eng.send(Command::Prev);
+        let s = eng.sync();
+        assert_eq!(s.index, 0, "status must reflect Prev before announce");
+        eng.send(Command::Quit);
+        eng.join();
     }
 
     #[test]
