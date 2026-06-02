@@ -480,8 +480,7 @@ mod tests {
         let mut files = crate::fuzz::read_dir_ext("tests/fixtures", ".mp3");
         files.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".mp3"));
         for data in files {
-            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
-            crate::fuzz::corrupt_each(&work, 29, |c| {
+            crate::fuzz::corrupt_spread(&data, |c| {
                 if let Ok(mut dec) = Mp3Decoder::from_bytes(c) {
                     drain(&mut dec, 8);
                 }

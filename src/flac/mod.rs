@@ -581,8 +581,7 @@ mod tests {
     #[test]
     fn fuzz_corrupt_and_truncate_fixtures() {
         for data in crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".flac").into_iter().take(1) {
-            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
-            crate::fuzz::corrupt_each(&work, 31, |c| {
+            crate::fuzz::corrupt_spread(&data, |c| {
                 if let Ok(mut dec) = FlacDecoder::from_bytes(c) {
                     drain(&mut dec, 6);
                 }

@@ -262,8 +262,7 @@ mod tests {
         files.truncate(1);
         files.extend(crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".aac.m4a").into_iter().take(1));
         for data in files {
-            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
-            crate::fuzz::corrupt_each(&work, 31, |c| {
+            crate::fuzz::corrupt_spread(&data, |c| {
                 let _ = mp4::demux(&c);
                 if let Ok(mut dec) = M4aDecoder::from_bytes(c) {
                     drain(&mut dec, 6);

@@ -353,8 +353,7 @@ mod tests {
     #[test]
     fn fuzz_corrupt_and_truncate_fixtures() {
         for data in opus_fixtures() {
-            let work: Vec<u8> = data.iter().take(16 * 1024).copied().collect();
-            crate::fuzz::corrupt_each(&work, 31, |c| {
+            crate::fuzz::corrupt_spread(&data, |c| {
                 if let Ok(mut dec) = OpusDecoder::from_bytes(&c) {
                     drain(&mut dec, 6);
                 }

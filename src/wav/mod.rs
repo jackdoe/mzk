@@ -274,8 +274,7 @@ mod tests {
     #[test]
     fn fuzz_corrupt_and_truncate_fixtures() {
         for data in crate::fuzz::read_dir_ext("tests/fixtures/voyager", ".wav").into_iter().take(1) {
-            let work: Vec<u8> = data.iter().take(24 * 1024).copied().collect();
-            crate::fuzz::corrupt_each(&work, 13, |c| {
+            crate::fuzz::corrupt_spread(&data, |c| {
                 if let Ok(mut dec) = WavDecoder::from_bytes(c) {
                     for _ in 0..16 {
                         if dec.next().is_none() {

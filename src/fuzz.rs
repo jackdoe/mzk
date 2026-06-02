@@ -18,20 +18,20 @@ pub fn each_case(count: u64, max_len: usize, mut f: impl FnMut(&[u8])) {
     }
 }
 
-pub fn for_seeds(count: u64, f: impl Fn(u64) + Sync) {
+pub fn for_seeds(count: u64, mut f: impl FnMut(u64)) {
     for k in 0..count {
         f(k);
     }
 }
 
-pub fn corrupt_each(data: &[u8], stride: usize, f: impl Fn(Vec<u8>) + Sync) {
+pub fn corrupt_spread(data: &[u8], mut f: impl FnMut(Vec<u8>)) {
     if data.is_empty() {
         return;
     }
-    let stride = stride.max(1);
-    let vals = [0u8, 0x01, 0x7f, 0x80, 0xfe, 0xff];
-    let mut i = 0usize;
-    while i < data.len() {
+    let n = ((128usize << 20) / data.len()).clamp(64, 600).min(data.len());
+    let vals = [0u8, 0x01, 0x80, 0xfe, 0xff];
+    for k in 0..n {
+        let i = data.len() * k / n;
         for &v in &vals {
             let mut c = data.to_vec();
             c[i] = v;
@@ -40,11 +40,10 @@ pub fn corrupt_each(data: &[u8], stride: usize, f: impl Fn(Vec<u8>) + Sync) {
         let mut x = data.to_vec();
         x[i] ^= 0xff;
         f(x);
-        i += stride;
     }
 }
 
-pub fn truncate_points(data: &[u8], n: usize, f: impl Fn(&[u8]) + Sync) {
+pub fn truncate_points(data: &[u8], n: usize, mut f: impl FnMut(&[u8])) {
     let n = n.max(1);
     for k in 0..=n {
         let len = data.len() * k / n;
