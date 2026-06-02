@@ -546,11 +546,14 @@ fn advance(order_pos: &mut usize, n: usize, repeat: Repeat, dir: i64) {
     if n == 0 {
         return;
     }
+    let p = *order_pos as i64 + dir;
     match repeat {
         Repeat::One => {}
-        _ => {
-            let p = *order_pos as i64 + dir;
-            *order_pos = p.rem_euclid(n as i64) as usize;
+        Repeat::All => *order_pos = p.rem_euclid(n as i64) as usize,
+        Repeat::Off => {
+            if (0..n as i64).contains(&p) {
+                *order_pos = p as usize;
+            }
         }
     }
 }
@@ -626,5 +629,22 @@ mod tests {
             }
         }
         assert_eq!(adjacent, 0, "same-artist tracks clustered: {arts:?}");
+    }
+
+    #[test]
+    fn repeat_off_clamps_at_ends_while_all_wraps() {
+        let mut p = 2usize;
+        advance(&mut p, 3, Repeat::Off, 1);
+        assert_eq!(p, 2, "off must not advance past the last track");
+        advance(&mut p, 3, Repeat::All, 1);
+        assert_eq!(p, 0, "all wraps past the last track");
+        advance(&mut p, 3, Repeat::Off, -1);
+        assert_eq!(p, 0, "off must not step before the first track");
+
+        let mut q = 1usize;
+        advance(&mut q, 3, Repeat::Off, 1);
+        assert_eq!(q, 2, "off advances within the playlist");
+        advance(&mut q, 3, Repeat::One, 1);
+        assert_eq!(q, 2, "one never moves");
     }
 }
