@@ -5,6 +5,7 @@ pub enum Error {
     Io(std::io::Error),
     BadOgg(&'static str),
     BadOpus(&'static str),
+    Decode(&'static str),
     Unsupported(&'static str),
     Audio(String),
 }
@@ -23,6 +24,7 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "io: {e}"),
             Error::BadOgg(s) => write!(f, "ogg: {s}"),
             Error::BadOpus(s) => write!(f, "opus: {s}"),
+            Error::Decode(s) => write!(f, "decode: {s}"),
             Error::Unsupported(s) => write!(f, "unsupported: {s}"),
             Error::Audio(s) => write!(f, "audio: {s}"),
         }

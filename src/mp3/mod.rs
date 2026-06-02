@@ -28,6 +28,7 @@ pub struct Mp3Decoder {
     reserv_buf: [u8; MAX_BITRESERVOIR_BYTES],
     overlap: [[f32; 576]; 2],
     vfifo: [[f32; 1024]; 2],
+    voff: [usize; 2],
     ist_pos: [[u8; 39]; 2],
     rate: u32,
     channels: usize,
@@ -82,6 +83,7 @@ impl Mp3Decoder {
             reserv_buf: [0; MAX_BITRESERVOIR_BYTES],
             overlap: [[0.0; 576]; 2],
             vfifo: [[0.0; 1024]; 2],
+            voff: [0; 2],
             ist_pos: [[0; 39]; 2],
             rate,
             channels,
@@ -99,6 +101,7 @@ impl Mp3Decoder {
         self.reserv = 0;
         self.overlap = [[0.0; 576]; 2];
         self.vfifo = [[0.0; 1024]; 2];
+        self.voff = [0; 2];
     }
 
     fn decode_frame(&mut self) -> Option<Vec<f32>> {
@@ -224,6 +227,7 @@ impl Mp3Decoder {
                     synthesis::subband_synthesis(
                         &grbuf[cb..cb + 576],
                         &mut self.vfifo[ch],
+                        &mut self.voff[ch],
                         &mut out[base..base + 576 * channels],
                         ch,
                         channels,

@@ -1,8 +1,6 @@
-type C = (f64, f64);
+type C = (f32, f32);
 
-fn cmul(a: C, b: C) -> C {
-    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
-}
+const MAX_N: usize = 512;
 
 fn smallest_factor(n: usize) -> usize {
     for &p in &[2usize, 3, 5] {
@@ -20,52 +18,53 @@ pub struct Fft {
 
 impl Fft {
     pub fn new(n: usize) -> Self {
+        assert!(n <= MAX_N);
         let mut tw = Vec::with_capacity(n);
         for k in 0..n {
             let a = -2.0 * std::f64::consts::PI * k as f64 / n as f64;
-            tw.push((a.cos(), a.sin()));
+            tw.push((a.cos() as f32, a.sin() as f32));
         }
         Fft { n, tw }
     }
 
-    fn rec(&self, x: &[C], n: usize) -> Vec<C> {
+    fn rec(&self, x: &[C], out: &mut [C], n: usize, stride: usize) {
         if n == 1 {
-            return vec![x[0]];
+            out[0] = x[0];
+            return;
         }
         let r = smallest_factor(n);
         let m = n / r;
-        let mut fsubs: Vec<Vec<C>> = Vec::with_capacity(r);
         for j in 0..r {
-            let sub: Vec<C> = (0..m).map(|i| x[j + i * r]).collect();
-            fsubs.push(self.rec(&sub, m));
+            self.rec(&x[j * stride..], &mut out[j * m..j * m + m], m, stride * r);
         }
         let scale = self.n / n;
-        let mut out = vec![(0.0, 0.0); n];
+        let mut t = [(0.0f32, 0.0f32); 5];
         for k in 0..m {
+            for (j, slot) in t[..r].iter_mut().enumerate() {
+                *slot = out[j * m + k];
+            }
             for q in 0..r {
                 let kq = k + m * q;
-                let mut sum = (0.0, 0.0);
+                let mut sre = 0.0f32;
+                let mut sim = 0.0f32;
                 for j in 0..r {
-                    let e = (j * kq) % n;
-                    let w = self.tw[e * scale % self.n];
-                    let t = cmul(fsubs[j][k], w);
-                    sum.0 += t.0;
-                    sum.1 += t.1;
+                    let w = self.tw[(j * kq) % n * scale];
+                    let a = t[j];
+                    sre += a.0 * w.0 - a.1 * w.1;
+                    sim += a.0 * w.1 + a.1 * w.0;
                 }
-                out[kq] = sum;
+                out[kq] = (sre, sim);
             }
         }
-        out
     }
 
     pub fn forward(&self, data: &mut [(f32, f32)]) {
-        let x: Vec<C> = data.iter().map(|&(r, i)| (r as f64, i as f64)).collect();
-        let y = self.rec(&x, self.n);
-        for (d, s) in data.iter_mut().zip(y.iter()) {
-            *d = (s.0 as f32, s.1 as f32);
-        }
+        let n = self.n;
+        let mut scratch = [(0.0f32, 0.0f32); MAX_N];
+        let inp = &mut scratch[..n];
+        inp.copy_from_slice(&data[..n]);
+        self.rec(inp, &mut data[..n], n, 1);
     }
-
 }
 
 #[cfg(test)]

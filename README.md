@@ -1,13 +1,13 @@
 # mzk
 
-A teletype-style terminal music player that decodes Opus **and MP3** entirely
-from scratch in pure Rust, with **zero crate dependencies**. It reads `.opus`
-and `.mp3` files, decodes them in-house (no `libopus`, no `libmp3lame`, no
-`ffmpeg`, no audio crates), and plays them through the OS sound server via raw
-FFI.
+A teletype-style terminal music player that decodes **Opus, MP3, FLAC, WAV, and
+MPEG-4 audio (ALAC + AAC-LC)** entirely from scratch in pure Rust, with **zero
+crate dependencies**. It reads `.opus`, `.mp3`, `.flac`, `.wav`, and `.m4a`
+files, decodes them in-house (no `libopus`, no `libmp3lame`, no `ffmpeg`, no
+audio crates), and plays them through the OS sound server via raw FFI.
 
 ```
-mzk *.opus *.mp3
+mzk *.opus *.mp3 *.flac *.wav *.m4a
 ```
 
 You get a 1979-style command prompt — append-only, no curses, no escape codes,
@@ -31,9 +31,20 @@ Type `help` for the command list.
   decode, the bit reservoir, requantization, stereo (M/S + intensity), the
   hybrid IMDCT, and the polyphase synthesis filterbank — verified bit-exact
   against `ffmpeg`'s PCM (relative RMS ~1e-6 after a decoder-delay lag search).
+- Decodes **FLAC** (`.flac`) from scratch — STREAMINFO + metadata, fixed and
+  LPC subframes, Rice residual coding, and L/S · R/S · M/S decorrelation —
+  **bit-exact** against `ffmpeg`.
+- Decodes **WAV** (`.wav`) — RIFF/WAVE, PCM (8/16/24/32-bit) and IEEE float —
+  bit-exact.
+- Decodes **MPEG-4 audio** (`.m4a`) from scratch behind its own ISOBMFF demux:
+  **ALAC** (Apple Lossless) **bit-exact**, and **AAC-LC** (Huffman, scalefactors,
+  M/S + intensity stereo, TNS, the long/short sine·KBD filterbank) verified
+  against `ffmpeg` (relative RMS ~1e-6 on the deterministic path; perceptual-
+  noise-substitution bands are decoder-defined and left unfilled).
 - Each stream plays at its **own sample rate and channel count** (Opus is
-  48 kHz; MP3 is usually 44.1 kHz and may be mono); the OS sink is reopened
-  when the format changes between tracks.
+  48 kHz; the rest are usually 44.1 kHz and may be mono); the OS sink is
+  reopened when the format changes between tracks, and same-format track
+  changes are gapless.
 - Plays through **PulseAudio / PipeWire** on Linux and **CoreAudio** on macOS.
 - Teletype REPL: list, now-playing, play/pause, next/prev, volume, seek,
   blue-noise shuffle, repeat.
@@ -46,12 +57,14 @@ which codec it is. Each decoder yields interleaved `f32` at its own rate:
 
 ```
 file ── decoder::open ──┐
-                        ├─ src/opus/  (.opus)             ┐
-                        │    ogg → toc → celt → f32 @48k  │ Box<dyn Decoder>
-                        └─ src/mp3/   (.mp3)              │ next()/seek()/rate
-                             header → sideinfo → reservoir│
-                             → huffman → requant → stereo │
-                             → imdct → synthesis → f32    ┘
+                        ├─ src/opus/  (.opus)  ogg → toc → celt → f32 @48k  ┐
+                        ├─ src/mp3/   (.mp3)   header → reservoir → huffman  │
+                        │                       → requant → imdct → synth    │ Box<dyn
+                        ├─ src/flac/  (.flac)  metadata → subframes → rice   │ Decoder>
+                        │                       → lpc/fixed → decorrelate    │ next()
+                        ├─ src/wav/   (.wav)   riff → pcm/float → f32        │ seek()
+                        └─ src/m4a/   (.m4a)   mp4 demux → alac | aac-lc     │ rate()
+                                                                             ┘
                                   └─ pcm.rs   push f32 to a lock-free ring
                                        └─ audio/  OS sink drains the ring (FFI)
 ```
@@ -129,6 +142,42 @@ Design notes:
   lag-tolerant decode-vs-`ffmpeg` RMS test in `mp3/mod.rs`.
 - Duration comes from a **Xing/Info** header when present, else a CBR estimate.
 
+### The FLAC decoder (`src/flac/`)
+
+A native FLAC decoder behind `flac::FlacDecoder`. It parses the metadata blocks
+(reads `STREAMINFO`, skips the rest, including the embedded cover-art `PICTURE`),
+then decodes frames: per-channel subframes (constant, verbatim, fixed orders
+0–4, and LPC), Rice-coded residuals (partitions + escape), and the inter-channel
+decorrelation modes (left/side, right/side, mid/side). Output is `i32` →
+`f32 / 2^(bps-1)`. Verified **bit-exact** against `ffmpeg`.
+
+### The WAV decoder (`src/wav/`)
+
+`wav::WavDecoder` walks RIFF chunks, reads `fmt `/`data`, and converts PCM
+(8/16/24/32-bit), IEEE float (32/64-bit), and `WAVE_FORMAT_EXTENSIBLE` to
+interleaved `f32`. Unknown chunks are skipped. Bit-exact.
+
+### The MPEG-4 audio path (`src/m4a/`)
+
+`.m4a` is a container, so the work splits in two. `m4a/mp4.rs` is an ISOBMFF
+demux — it walks the box tree (`moov→trak→mdia→minf→stbl`), reads the sample
+tables (`stsd`/`stsz`/`stsc`/`stco`) into per-frame byte ranges, and pulls the
+codec config (the ALAC magic cookie, or the AAC `AudioSpecificConfig` out of
+`esds`). The codec then decodes each frame:
+
+- **ALAC** (`m4a/alac.rs`) — Apple Lossless: per-channel adaptive Golomb-Rice
+  residuals, the sign-adaptive FIR predictor, and the stereo unmix. Frames are
+  independent, so seeking is exact with no pre-roll. **Bit-exact**.
+- **AAC-LC** (`m4a/aac.rs`) — the raw-data-block syntax (SCE/CPE/…), Huffman
+  spectral decode, scalefactor DPCM, inverse quantization (`|q|^(4/3)`),
+  M/S + intensity stereo, TNS, and the long/short inverse filterbank with sine
+  and Kaiser-Bessel-derived windows. The ISO Huffman codebooks and
+  scalefactor-band tables live in `m4a/aac_tables.rs`, generated from a
+  reference by `scripts/gen-aac-tables.py` (they are factual tables from
+  ISO/IEC 14496-3, not hand-transcribed). Verified against `ffmpeg`'s decode
+  (relative RMS ~1e-6 on the deterministic path; PNS noise bands are
+  decoder-defined and left silent).
+
 ### Audio (`src/audio/`)
 
 `PlatformSink` is selected at compile time. On Linux it's `pulse.rs`, which
@@ -170,24 +219,33 @@ You do **not** touch `fft`, `pcm`, `audio`, the engine loop, or the REPL — the
 are codec-agnostic. The engine drives `Box<dyn Decoder>`, tracks position at the
 decoder's own rate, and reopens the sink when the format changes. That seam —
 `decoder.rs` plus per-stream rate/channels — is the whole point of the layering
-above; `opus/` and `mp3/` are just its first two tenants.
+above; `opus/`, `mp3/`, `flac/`, `wav/`, and `m4a/` are its tenants.
 
 ## Build & run
 
 ```
 cargo build --release
-./target/release/mzk ~/Music/*.opus ~/Music/*.mp3
+./target/release/mzk ~/Music/*.opus ~/Music/*.mp3 ~/Music/*.flac ~/Music/*.m4a
 ```
 
 No dependencies to install for building. At runtime on Linux you need a working
 PulseAudio or PipeWire (standard on any desktop). Tests, including the
-decode-accuracy gate, run with `cargo test`.
+decode-accuracy gates, run with `cargo test`.
+
+The decode gates for FLAC/WAV/ALAC/AAC compare against `ffmpeg`-generated
+references under `tests/fixtures/voyager/` (public-domain audio from the
+[Voyager Golden Record](https://archive.org/details/voyager-golden-record-cd-ozma)).
+That directory is git-ignored; `scripts/gen-fixtures.sh` fetches the source and
+regenerates the references (and `scripts/gen-aac-tables.py` regenerates the AAC
+codebook tables). The tests skip gracefully when the fixtures are absent.
 
 ## Scope
 
-In: CELT-only Opus (config 31) and MPEG-1/2/2.5 Layer III MP3. Out (for now):
-Opus SILK/hybrid, MP3 free-format, resampling, other container/codec formats.
-The `Decoder` seam above is where they'd go.
+In: CELT-only Opus (config 31), MPEG-1/2/2.5 Layer III MP3, FLAC, PCM/float
+WAV, and MPEG-4 ALAC + AAC-LC. Out (for now): Opus SILK/hybrid, MP3
+free-format, AAC perceptual-noise-substitution playback (PNS bands decode
+silent), HE-AAC/SBR, multichannel (>2) layouts, resampling. The `Decoder` seam
+above is where the rest would go.
 
 ---
 

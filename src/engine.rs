@@ -208,9 +208,10 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
     let mut repeat = Repeat::All;
     let mut vol = 1.0f32;
     let mut paused = false;
+    let mut shown_idx = usize::MAX;
 
     let mut track = open_index(&playlist, order[order_pos], &status);
-    update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, 0);
+    update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, 0, &mut shown_idx);
 
     let mut cur_format = format_of(&track);
     let mut sink = PlatformSink::new(ring.reader(), cur_format.0, cur_format.1);
@@ -358,7 +359,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
             }
         }
 
-        update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, consumed_samples);
+        update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, consumed_samples, &mut shown_idx);
         acked.store(consumed, Ordering::Release);
 
         if !worked {
@@ -412,11 +413,15 @@ fn update_status(
     repeat: Repeat,
     paused: bool,
     consumed_samples: u64,
+    shown_idx: &mut usize,
 ) {
     let mut s = status.lock().unwrap();
     let idx = order.get(order_pos).copied().unwrap_or(0);
     s.index = idx;
-    s.name = track_name(&playlist[idx.min(playlist.len().saturating_sub(1))]);
+    if idx != *shown_idx {
+        s.name = track_name(&playlist[idx.min(playlist.len().saturating_sub(1))]);
+        *shown_idx = idx;
+    }
     s.vol = vol;
     s.shuffle = shuffle;
     s.repeat = repeat;

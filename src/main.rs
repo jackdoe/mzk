@@ -3,11 +3,14 @@ mod decoder;
 mod engine;
 mod error;
 mod fft;
+mod flac;
+mod m4a;
 mod mp3;
 mod opus;
 mod pcm;
 mod repl;
 mod repl_fmt;
+mod wav;
 #[cfg(test)]
 mod fuzz;
 

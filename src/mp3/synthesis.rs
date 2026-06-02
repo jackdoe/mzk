@@ -15,24 +15,30 @@ fn cos_matrix() -> &'static [[f32; 32]; 64] {
     })
 }
 
-pub fn subband_synthesis(grbuf: &[f32], v: &mut [f32; 1024], out: &mut [f32], ch: usize, nch: usize) {
+pub fn subband_synthesis(
+    grbuf: &[f32],
+    v: &mut [f32; 1024],
+    off: &mut usize,
+    out: &mut [f32],
+    ch: usize,
+    nch: usize,
+) {
     let n = cos_matrix();
     for ss in 0..18 {
-        for i in (64..1024).rev() {
-            v[i] = v[i - 64];
-        }
+        *off = (*off + 1024 - 64) & 1023;
+        let base = *off;
         for (i, row) in n.iter().enumerate() {
             let mut sum = 0.0;
             for j in 0..32 {
                 sum += row[j] * grbuf[j * 18 + ss];
             }
-            v[i] = sum;
+            v[base + i] = sum;
         }
         let mut u = [0.0f32; 512];
         for i in 0..8 {
             for j in 0..32 {
-                u[(i << 6) + j] = v[(i << 7) + j];
-                u[(i << 6) + j + 32] = v[(i << 7) + j + 96];
+                u[(i << 6) + j] = v[(base + (i << 7) + j) & 1023];
+                u[(i << 6) + j + 32] = v[(base + (i << 7) + j + 96) & 1023];
             }
         }
         for i in 0..512 {
