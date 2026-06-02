@@ -1,0 +1,53 @@
+[package]
+name = "mzk-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.mzk]
+path = ".."
+
+[profile.release]
+debug-assertions = false
+overflow-checks = false
+
+[[bin]]
+name = "mp3"
+path = "fuzz_targets/mp3.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flac"
+path = "fuzz_targets/flac.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wav"
+path = "fuzz_targets/wav.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "m4a"
+path = "fuzz_targets/m4a.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "opus"
+path = "fuzz_targets/opus.rs"
+test = false
+doc = false
+bench = false
