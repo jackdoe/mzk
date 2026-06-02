@@ -98,7 +98,7 @@ behind `opus::OpusDecoder`.
 | bit allocation | `opus/celt/allocation.rs`, `opus/celt/rate.rs` | how many bits each band gets |
 | spectral shape | `opus/celt/vq.rs`, `opus/celt/cwrs.rs` | PVQ: unit-norm pulse vectors per band |
 | band assembly | `opus/celt/bands.rs` | `quant_all_bands`: theta/stereo split recursion, denormalise, anti-collapse |
-| time domain | `opus/mdct.rs`, `fft.rs`, `opus/celt/synth.rs` | inverse MDCT (own mixed-radix FFT), overlap-add, de-emphasis, comb postfilter |
+| time domain | `opus/mdct.rs`, `fft.rs`, `opus/celt/synth.rs` | inverse MDCT (own radix-4/2 mixed-radix FFT, zero per-call heap), overlap-add, de-emphasis, comb postfilter |
 | constants | `opus/celt/tables.rs` | the normative band layout and allocation tables |
 
 Design notes:
@@ -168,10 +168,11 @@ codec config (the ALAC magic cookie, or the AAC `AudioSpecificConfig` out of
 - **ALAC** (`m4a/alac.rs`) — Apple Lossless: per-channel adaptive Golomb-Rice
   residuals, the sign-adaptive FIR predictor, and the stereo unmix. Frames are
   independent, so seeking is exact with no pre-roll. **Bit-exact**.
-- **AAC-LC** (`m4a/aac.rs`) — the raw-data-block syntax (SCE/CPE/…), Huffman
-  spectral decode, scalefactor DPCM, inverse quantization (`|q|^(4/3)`),
+- **AAC-LC** (`m4a/aac.rs`) — the raw-data-block syntax (SCE/CPE/…), table-driven
+  Huffman spectral decode, scalefactor DPCM, inverse quantization (`|q|^(4/3)`),
   M/S + intensity stereo, TNS, and the long/short inverse filterbank with sine
-  and Kaiser-Bessel-derived windows. The ISO Huffman codebooks and
+  and Kaiser-Bessel-derived windows — its inverse MDCT routing through the same
+  radix-4 FFT in `fft.rs` as Opus, so it is O(N log N), not an O(N²) matrix. The ISO Huffman codebooks and
   scalefactor-band tables live in `m4a/aac_tables.rs`, generated from a
   reference by `scripts/gen-aac-tables.py` (they are factual tables from
   ISO/IEC 14496-3, not hand-transcribed). Verified against `ffmpeg`'s decode
@@ -193,6 +194,39 @@ both the ring and the server buffer so it lands instantly. macOS uses
 same artist together — "white noise"). Instead each artist's tracks are spread
 evenly across the playlist with a random phase, so artists are interleaved and
 never cluster — a blue-noise distribution. See `shuffle_order` in `engine.rs`.
+
+## Performance
+
+Everything decodes far faster than real time. `mzk --bench FILE...` runs each
+decoder flat-out into a null sink and prints throughput, samples, and RSS per
+file. On the dev machine (native `target-cpu`), per second of audio:
+
+| format | speed × real time |
+|--------|------------------:|
+| WAV    | ~4000× |
+| AAC-LC | ~780× |
+| FLAC   | ~730× |
+| ALAC   | ~410× |
+| MP3    | ~375× |
+| Opus   | ~310× |
+
+The decode hot paths are the transforms and the entropy stages, so those get the
+attention:
+
+- **One shared FFT** (`fft.rs`) — a radix-4/2 mixed-radix FFT (radix-3/5
+  fallback) with twiddles computed once at startup and **zero per-call heap
+  allocation**, running on a reused stack scratch. Both the Opus and the AAC
+  inverse MDCT route through it.
+- **Table-driven AAC Huffman** — a 10-bit root lookup plus a short scan for the
+  rare long codes, instead of a hash probe per bit.
+- **Rotating MP3 synthesis buffer** — the 1024-sample FIFO advances a write
+  offset rather than memmoving the whole buffer every subband sample.
+
+Release builds use `codegen-units = 1` + LTO, and `.cargo/config.toml` sets
+`target-cpu=native` so the `f32` inner loops autovectorize. `scripts/bench.sh
+LABEL` builds a symbol-bearing `profiling` profile, records `perf`, renders
+`inferno` flamegraphs into `prof/LABEL/`, and `scripts/bench.sh compare A B`
+diffs two labeled runs.
 
 ## Adding a new codec
 
@@ -230,7 +264,8 @@ cargo build --release
 
 No dependencies to install for building. At runtime on Linux you need a working
 PulseAudio or PipeWire (standard on any desktop). Tests, including the
-decode-accuracy gates, run with `cargo test`.
+decode-accuracy gates, run with `cargo test`. `mzk --bench FILE...` decodes to a
+null sink and reports throughput (see [Performance](#performance)).
 
 The decode gates for FLAC/WAV/ALAC/AAC compare against `ffmpeg`-generated
 references under `tests/fixtures/voyager/` (public-domain audio from the

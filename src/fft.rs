@@ -2,13 +2,22 @@ type C = (f32, f32);
 
 const MAX_N: usize = 512;
 
-fn smallest_factor(n: usize) -> usize {
-    for &p in &[2usize, 3, 5] {
-        if n % p == 0 {
-            return p;
-        }
+fn radix(n: usize) -> usize {
+    if n % 4 == 0 {
+        4
+    } else if n % 2 == 0 {
+        2
+    } else if n % 3 == 0 {
+        3
+    } else if n % 5 == 0 {
+        5
+    } else {
+        n
     }
-    n
+}
+
+fn cmul(a: C, b: C) -> C {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
 }
 
 pub struct Fft {
@@ -32,12 +41,47 @@ impl Fft {
             out[0] = x[0];
             return;
         }
-        let r = smallest_factor(n);
+        let r = radix(n);
         let m = n / r;
         for j in 0..r {
             self.rec(&x[j * stride..], &mut out[j * m..j * m + m], m, stride * r);
         }
         let scale = self.n / n;
+        match r {
+            2 => self.combine2(out, m, scale),
+            4 => self.combine4(out, m, scale),
+            _ => self.combine_generic(out, n, m, r, scale),
+        }
+    }
+
+    fn combine2(&self, out: &mut [C], m: usize, scale: usize) {
+        for k in 0..m {
+            let w = self.tw[k * scale];
+            let t0 = out[k];
+            let p = cmul(out[k + m], w);
+            out[k] = (t0.0 + p.0, t0.1 + p.1);
+            out[k + m] = (t0.0 - p.0, t0.1 - p.1);
+        }
+    }
+
+    fn combine4(&self, out: &mut [C], m: usize, scale: usize) {
+        for k in 0..m {
+            let a0 = out[k];
+            let a1 = cmul(out[k + m], self.tw[k * scale]);
+            let a2 = cmul(out[k + 2 * m], self.tw[2 * k * scale]);
+            let a3 = cmul(out[k + 3 * m], self.tw[3 * k * scale]);
+            let t0 = (a0.0 + a2.0, a0.1 + a2.1);
+            let t1 = (a1.0 + a3.0, a1.1 + a3.1);
+            let t2 = (a0.0 - a2.0, a0.1 - a2.1);
+            let t3 = (a1.0 - a3.0, a1.1 - a3.1);
+            out[k] = (t0.0 + t1.0, t0.1 + t1.1);
+            out[k + m] = (t2.0 + t3.1, t2.1 - t3.0);
+            out[k + 2 * m] = (t0.0 - t1.0, t0.1 - t1.1);
+            out[k + 3 * m] = (t2.0 - t3.1, t2.1 + t3.0);
+        }
+    }
+
+    fn combine_generic(&self, out: &mut [C], n: usize, m: usize, r: usize, scale: usize) {
         let mut t = [(0.0f32, 0.0f32); 5];
         for k in 0..m {
             for (j, slot) in t[..r].iter_mut().enumerate() {

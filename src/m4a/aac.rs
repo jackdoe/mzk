@@ -2,7 +2,6 @@ use super::aac_tables::*;
 use super::mp4::AacConfig;
 use crate::error::{Error, Result};
 use crate::fft::Fft;
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 const SF_OFFSET: i32 = 100;
@@ -38,49 +37,81 @@ impl<'a> Br<'a> {
     fn left(&self) -> usize {
         self.limit.saturating_sub(self.pos)
     }
-}
-
-fn build_map(codes: &[u16], bits: &[u8]) -> HashMap<u32, u16> {
-    let mut m = HashMap::with_capacity(codes.len());
-    for i in 0..codes.len() {
-        let key = (1u32 << bits[i]) | codes[i] as u32;
-        m.insert(key, i as u16);
+    fn peek(&self, n: u32) -> u32 {
+        let base = self.pos >> 3;
+        let mut acc = 0u64;
+        for i in 0..5 {
+            let b = self.d.get(base + i).copied().unwrap_or(0) as u64;
+            acc = (acc << 8) | b;
+        }
+        let off = (self.pos & 7) as u32;
+        ((acc >> (40 - off - n)) & ((1u64 << n) - 1)) as u32
     }
-    m
+    fn skip(&mut self, n: u32) {
+        self.pos += n as usize;
+    }
 }
 
-fn spec_maps() -> &'static Vec<HashMap<u32, u16>> {
-    static M: OnceLock<Vec<HashMap<u32, u16>>> = OnceLock::new();
+const HUFF_ROOT_BITS: u32 = 10;
+
+struct Huff {
+    root: Vec<u32>,
+    long: Vec<(u32, u8, u16)>,
+}
+
+impl Huff {
+    fn new(codes: &[u32], bits: &[u8]) -> Self {
+        let mut root = vec![0u32; 1 << HUFF_ROOT_BITS];
+        let mut long = Vec::new();
+        for i in 0..codes.len() {
+            let len = bits[i] as u32;
+            let code = codes[i];
+            let sym = i as u16;
+            if len <= HUFF_ROOT_BITS {
+                let shift = HUFF_ROOT_BITS - len;
+                let entry = ((sym as u32) << 8) | len;
+                for s in (code << shift)..((code + 1) << shift) {
+                    root[s as usize] = entry;
+                }
+            } else {
+                long.push((code, bits[i], sym));
+            }
+        }
+        Huff { root, long }
+    }
+
+    fn decode(&self, br: &mut Br) -> u16 {
+        let entry = self.root[br.peek(HUFF_ROOT_BITS) as usize];
+        let len = entry & 0xff;
+        if len != 0 {
+            br.skip(len);
+            return (entry >> 8) as u16;
+        }
+        for &(code, bits, sym) in &self.long {
+            if br.peek(bits as u32) == code {
+                br.skip(bits as u32);
+                return sym;
+            }
+        }
+        0
+    }
+}
+
+fn spec_tables() -> &'static Vec<Huff> {
+    static M: OnceLock<Vec<Huff>> = OnceLock::new();
     M.get_or_init(|| {
         (0..11)
-            .map(|i| build_map(AAC_SPEC_CODES[i], AAC_SPEC_BITS[i]))
+            .map(|i| {
+                let codes: Vec<u32> = AAC_SPEC_CODES[i].iter().map(|&c| c as u32).collect();
+                Huff::new(&codes, AAC_SPEC_BITS[i])
+            })
             .collect()
     })
 }
 
-fn scf_map() -> &'static HashMap<u32, u16> {
-    static M: OnceLock<HashMap<u32, u16>> = OnceLock::new();
-    M.get_or_init(|| {
-        let codes: Vec<u16> = AAC_SCF_CODES.iter().map(|&c| c as u16).collect();
-        let mut m = HashMap::with_capacity(121);
-        for i in 0..121 {
-            let key = (1u32 << AAC_SCF_BITS[i]) | AAC_SCF_CODES[i];
-            m.insert(key, i as u16);
-        }
-        let _ = codes;
-        m
-    })
-}
-
-fn huff(map: &HashMap<u32, u16>, br: &mut Br) -> u16 {
-    let mut acc = 1u32;
-    for _ in 0..20 {
-        acc = (acc << 1) | br.bit();
-        if let Some(&v) = map.get(&acc) {
-            return v;
-        }
-    }
-    0
+fn scf_table() -> &'static Huff {
+    static M: OnceLock<Huff> = OnceLock::new();
+    M.get_or_init(|| Huff::new(&AAC_SCF_CODES, &AAC_SCF_BITS))
 }
 
 fn pow43() -> &'static Vec<f32> {
@@ -121,7 +152,7 @@ fn decode_tuple(br: &mut Br, cb: usize, out: &mut [i32]) {
     let dim = CB_DIM[cb];
     let m = CB_MOD[cb];
     let off = CB_OFF[cb];
-    let idx = huff(&spec_maps()[cb - 1], br) as i32;
+    let idx = spec_tables()[cb - 1].decode(br) as i32;
     if dim == 4 {
         out[0] = idx / (m * m * m) - off;
         out[1] = (idx / (m * m)) % m - off;
@@ -420,7 +451,7 @@ impl Aac {
     }
 
     fn read_scalefactors(&self, br: &mut Br, ics: &mut Ics, global_gain: i32) {
-        let map = scf_map();
+        let map = scf_table();
         ics.scf = vec![vec![0i32; ics.max_sfb]; ics.num_groups];
         let mut scf = global_gain;
         let mut is_pos = 0i32;
@@ -432,7 +463,7 @@ impl Aac {
                 ics.scf[g][sfb] = match cb {
                     0 => 0,
                     14 | 15 => {
-                        is_pos += huff(map, br) as i32 - 60;
+                        is_pos += map.decode(br) as i32 - 60;
                         is_pos
                     }
                     13 => {
@@ -440,12 +471,12 @@ impl Aac {
                             noise_first = false;
                             noise += br.bits(9) as i32 - 256;
                         } else {
-                            noise += huff(map, br) as i32 - 60;
+                            noise += map.decode(br) as i32 - 60;
                         }
                         noise
                     }
                     _ => {
-                        scf += huff(map, br) as i32 - 60;
+                        scf += map.decode(br) as i32 - 60;
                         scf
                     }
                 };
