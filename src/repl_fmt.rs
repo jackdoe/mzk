@@ -81,8 +81,14 @@ pub fn fmt_np(
     let head = format!("{:02}  ", index);
     let fixed = head.chars().count() + 2 + tail.chars().count();
     let budget = if fixed >= 79 { 0 } else { 79 - fixed };
-    let truncated: String = fmt_label(name, ext).chars().take(budget).collect();
-    format!("{}{}  {}", head, truncated, tail)
+    let suffix = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{}", ext)
+    };
+    let avail = budget.saturating_sub(suffix.chars().count());
+    let truncated: String = name.chars().take(avail).collect();
+    format!("{}{}{}  {}", head, truncated, suffix, tail)
 }
 
 #[derive(Debug, PartialEq)]
