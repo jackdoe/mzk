@@ -1,15 +1,86 @@
 use mzk::{decoder, engine, repl};
 
 fn usage() -> ! {
-    eprintln!("usage: mzk [-s off|on|fav] [-v 0-100] [-r off|one|all] FILE...");
+    eprintln!("usage: mzk [-s off|on|fav] [-v 0-100] [-r off|one|all] [-nd] FILE|DIR...");
     std::process::exit(2);
+}
+
+const EXTS: [&str; 5] = ["flac", "wav", "m4a", "opus", "mp3"];
+const MAX_SCAN_DEPTH: u32 = 64;
+
+fn rank(p: &std::path::Path) -> usize {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .and_then(|e| EXTS.iter().position(|&x| x == e.to_ascii_lowercase()))
+        .unwrap_or(EXTS.len())
+}
+
+fn dedup(files: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut seen: std::collections::HashMap<std::path::PathBuf, usize> =
+        std::collections::HashMap::new();
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for f in files {
+        match seen.entry(f.with_extension("")) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                let i = *e.get();
+                if rank(&f) < rank(&out[i]) {
+                    out[i] = f;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(out.len());
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+fn scan(dir: &std::path::Path, depth: u32, out: &mut Vec<std::path::PathBuf>) {
+    if depth >= MAX_SCAN_DEPTH {
+        return;
+    }
+    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd.flatten().map(|e| e.path()).collect(),
+        Err(_) => return,
+    };
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            scan(&p, depth + 1, out);
+        } else if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| EXTS.contains(&e.to_ascii_lowercase().as_str()))
+            .unwrap_or(false)
+        {
+            out.push(p);
+        }
+    }
+}
+
+fn add(arg: String, out: &mut Vec<std::path::PathBuf>) {
+    let p = std::path::PathBuf::from(arg);
+    if p.is_dir() {
+        scan(&p, 0, out);
+    } else {
+        out.push(p);
+    }
 }
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let n0 = args.len();
+    args.retain(|a| a != "-nd" && a != "--no-dedup");
+    let no_dedup = args.len() != n0;
+    let finish = |files: Vec<std::path::PathBuf>| if no_dedup { files } else { dedup(files) };
     if args.first().map(String::as_str) == Some("--bench") {
         args.remove(0);
-        bench(args.into_iter().map(Into::into).collect());
+        let mut files = Vec::new();
+        for a in args {
+            add(a, &mut files);
+        }
+        bench(finish(files));
         return;
     }
 
@@ -37,9 +108,10 @@ fn main() {
                 Some("all") => settings.repeat = engine::Repeat::All,
                 _ => usage(),
             },
-            _ => files.push(a.into()),
+            _ => add(a, &mut files),
         }
     }
+    let files = finish(files);
     if files.is_empty() {
         usage();
     }
@@ -106,4 +178,38 @@ fn bench(files: Vec<std::path::PathBuf>) {
         );
     }
     println!("peak RSS: {} KiB", proc_kib("VmHWM:"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn dedup_picks_higher_quality_in_place() {
+        let files: Vec<PathBuf> = ["a/x.mp3", "a/x.opus", "a/y.opus", "a/y.flac", "b/x.mp3"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let got = dedup(files);
+        let want: Vec<PathBuf> = ["a/x.opus", "a/y.flac", "b/x.mp3"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn dedup_keeps_distinct_and_unknown_extensions() {
+        let files: Vec<PathBuf> = ["x.mp3", "y.mp3", "z.ogg"].iter().map(PathBuf::from).collect();
+        assert_eq!(dedup(files.clone()), files);
+    }
+
+    #[test]
+    fn rank_orders_lossless_above_lossy() {
+        assert!(rank(Path::new("x.flac")) < rank(Path::new("x.m4a")));
+        assert!(rank(Path::new("x.m4a")) < rank(Path::new("x.opus")));
+        assert!(rank(Path::new("x.OPUS")) < rank(Path::new("x.mp3")));
+        assert_eq!(rank(Path::new("x.ogg")), EXTS.len());
+    }
 }
