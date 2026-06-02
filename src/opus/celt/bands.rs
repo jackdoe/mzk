@@ -232,7 +232,7 @@ fn compute_theta(
     lm: i32,
     stereo: bool,
     fill: &mut i32,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
 ) {
     let i = ctx.i;
     let pulse_cap = ctx.m.log_n[i] + lm * (1 << BITRES);
@@ -337,7 +337,7 @@ fn quant_band_n1(
     x: &mut [f32],
     y: Option<&mut [f32]>,
     lowband_out: Option<&mut [f32]>,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
 ) -> u32 {
     let stereo = y.is_some();
     let mut chans: [Option<&mut [f32]>; 2] = [Some(x), y];
@@ -373,7 +373,7 @@ fn quant_partition(
     lm: i32,
     gain: f32,
     fill: i32,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
 ) -> u32 {
     let mut n = n;
     let mut b = b;
@@ -525,7 +525,7 @@ fn quant_band(
     gain: f32,
     lowband_scratch: Option<&mut [f32]>,
     fill: i32,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
 ) -> u32 {
     let n0 = n;
     let mut n_b = n;
@@ -645,7 +645,7 @@ fn quant_band_stereo(
     lowband_out: Option<&mut [f32]>,
     lowband_scratch: Option<&mut [f32]>,
     fill: i32,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
 ) -> u32 {
     let mut fill = fill;
     let mut cm: u32;
@@ -830,7 +830,7 @@ fn special_hybrid_folding(
 }
 
 pub fn quant_all_bands(
-    mode: &crate::celt::Mode,
+    mode: &crate::opus::celt::Mode,
     start: usize,
     end: usize,
     x: &mut [f32],
@@ -844,7 +844,7 @@ pub fn quant_all_bands(
     tf_res: &[i32],
     total_bits: i32,
     balance: i32,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
     lm: i32,
     coded_bands: usize,
     seed: &mut u32,
@@ -1101,7 +1101,7 @@ fn quant_band_mono(
     last: bool,
     scratch: &mut [f32],
     fill: u32,
-    rd: &mut crate::range::RangeDecoder,
+    rd: &mut crate::opus::range::RangeDecoder,
     use_norm_band: bool,
 ) -> u32 {
     let lowband_vec: Option<Vec<f32>> =
@@ -1133,7 +1133,7 @@ fn quant_band_mono(
 }
 
 pub fn anti_collapse(
-    mode: &crate::celt::Mode,
+    mode: &crate::opus::celt::Mode,
     x: &mut [f32],
     collapse_masks: &[u8],
     lm: i32,

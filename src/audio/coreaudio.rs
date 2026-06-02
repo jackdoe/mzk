@@ -76,26 +76,22 @@ extern "C" {
 
 const FORMAT_LPCM: u32 = 0x6C70_636D;
 const FORMAT_FLAGS_FLOAT_PACKED: u32 = 0x9;
-const SAMPLE_RATE: f64 = 48000.0;
-const CHANNELS: u32 = 2;
 const BITS_PER_CHANNEL: u32 = 32;
-const BYTES_PER_FRAME: u32 = 8;
 const FRAMES_PER_PACKET: u32 = 1;
-const BYTES_PER_PACKET: u32 = 8;
 
 const BUFFER_COUNT: usize = 3;
 const FRAMES_PER_BUFFER: u32 = 4096;
-const BUFFER_BYTES: u32 = FRAMES_PER_BUFFER * BYTES_PER_FRAME;
 
-fn asbd() -> AudioStreamBasicDescription {
+fn asbd(rate: u32, channels: u32) -> AudioStreamBasicDescription {
+    let bytes_per_frame = channels * 4;
     AudioStreamBasicDescription {
-        m_sample_rate: SAMPLE_RATE,
+        m_sample_rate: rate as f64,
         m_format_id: FORMAT_LPCM,
         m_format_flags: FORMAT_FLAGS_FLOAT_PACKED,
-        m_bytes_per_packet: BYTES_PER_PACKET,
+        m_bytes_per_packet: bytes_per_frame,
         m_frames_per_packet: FRAMES_PER_PACKET,
-        m_bytes_per_frame: BYTES_PER_FRAME,
-        m_channels_per_frame: CHANNELS,
+        m_bytes_per_frame: bytes_per_frame,
+        m_channels_per_frame: channels,
         m_bits_per_channel: BITS_PER_CHANNEL,
         m_reserved: 0,
     }
@@ -129,15 +125,19 @@ extern "C" fn render_callback(
 
 pub struct CoreAudioSink {
     reader: Box<Reader>,
+    rate: u32,
+    channels: u32,
     queue: AudioQueueRef,
     buffers: [AudioQueueBufferRef; BUFFER_COUNT],
     running: bool,
 }
 
 impl CoreAudioSink {
-    pub fn new(reader: Reader) -> Self {
+    pub fn new(reader: Reader, rate: u32, channels: u32) -> Self {
         CoreAudioSink {
             reader: Box::new(reader),
+            rate,
+            channels,
             queue: ptr::null_mut(),
             buffers: [ptr::null_mut(); BUFFER_COUNT],
             running: false,
@@ -145,7 +145,8 @@ impl CoreAudioSink {
     }
 
     pub fn start(&mut self) -> Result<()> {
-        let format = asbd();
+        let format = asbd(self.rate, self.channels);
+        let buffer_bytes = FRAMES_PER_BUFFER * self.channels * 4;
         let user_data = &mut *self.reader as *mut Reader as *mut c_void;
         let mut queue: AudioQueueRef = ptr::null_mut();
 
@@ -166,7 +167,7 @@ impl CoreAudioSink {
 
             for slot in self.buffers.iter_mut() {
                 let mut buffer: AudioQueueBufferRef = ptr::null_mut();
-                let status = AudioQueueAllocateBuffer(queue, BUFFER_BYTES, &mut buffer);
+                let status = AudioQueueAllocateBuffer(queue, buffer_bytes, &mut buffer);
                 if status != 0 {
                     return Err(Error::Audio(format!(
                         "AudioQueueAllocateBuffer failed: {status}"

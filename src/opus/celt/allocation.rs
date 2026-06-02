@@ -1,6 +1,6 @@
 use super::tables::{BITRES, MAX_FINE_BITS};
 use super::Mode;
-use crate::range::RangeDecoder;
+use crate::opus::range::RangeDecoder;
 
 const ALLOC_STEPS: i32 = 6;
 

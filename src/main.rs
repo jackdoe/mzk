@@ -1,15 +1,13 @@
 mod audio;
-mod celt;
+mod decoder;
 mod engine;
 mod error;
 mod fft;
-mod mdct;
-mod ogg;
+mod mp3;
+mod opus;
 mod pcm;
-mod range;
 mod repl;
 mod repl_fmt;
-mod toc;
 
 fn main() {
     let files: Vec<std::path::PathBuf> = std::env::args().skip(1).map(Into::into).collect();

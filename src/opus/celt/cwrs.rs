@@ -1,4 +1,4 @@
-use crate::range::{ec_ilog, RangeDecoder};
+use crate::opus::range::{ec_ilog, RangeDecoder};
 
 pub fn log2_frac(val: u32, frac: i32) -> i32 {
     let mut l = ec_ilog(val);

@@ -88,15 +88,15 @@ fn load() -> Result<Lib> {
     }
 }
 
-const RATE: u32 = 48000;
-const CHANNELS: u8 = 2;
-const CHUNK: usize = 1024 * CHANNELS as usize;
+const CHUNK_FRAMES: usize = 1024;
 
 struct Handle(*mut c_void);
 unsafe impl Send for Handle {}
 
 pub struct PulseSink {
     reader: Option<Reader>,
+    rate: u32,
+    channels: u8,
     stop: Arc<AtomicBool>,
     flush: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
@@ -105,9 +105,11 @@ pub struct PulseSink {
 }
 
 impl PulseSink {
-    pub fn new(reader: Reader) -> Self {
+    pub fn new(reader: Reader, rate: u32, channels: u32) -> Self {
         PulseSink {
             reader: Some(reader),
+            rate,
+            channels: channels as u8,
             stop: Arc::new(AtomicBool::new(false)),
             flush: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(false)),
@@ -131,14 +133,17 @@ impl PulseSink {
             .ok_or_else(|| Error::Audio("sink already started".into()))?;
         let lib = load()?;
 
+        let rate = self.rate;
+        let channels = self.channels;
+        let chunk = CHUNK_FRAMES * channels as usize;
         let ss = SampleSpec {
             format: PA_SAMPLE_FLOAT32LE,
-            rate: RATE,
-            channels: CHANNELS,
+            rate,
+            channels,
         };
         let attr = BufferAttr {
             maxlength: u32::MAX,
-            tlength: RATE * CHANNELS as u32 * 4 / 12,
+            tlength: rate * channels as u32 * 4 / 12,
             prebuf: u32::MAX,
             minreq: u32::MAX,
             fragsize: u32::MAX,
@@ -170,7 +175,7 @@ impl PulseSink {
         let vol = self.vol.clone();
         self.thread = Some(std::thread::spawn(move || {
             let handle = handle;
-            let mut buf = [0f32; CHUNK];
+            let mut buf = vec![0f32; chunk];
             while !stop.load(Ordering::Relaxed) {
                 let mut e: c_int = 0;
                 if flush.swap(false, Ordering::Relaxed) {
@@ -188,7 +193,7 @@ impl PulseSink {
                 for s in buf[got..].iter_mut() {
                     *s = 0.0;
                 }
-                let bytes = CHUNK * 4;
+                let bytes = chunk * 4;
                 unsafe {
                     (lib.write)(handle.0, buf.as_ptr() as *const c_void, bytes, &mut e);
                 }

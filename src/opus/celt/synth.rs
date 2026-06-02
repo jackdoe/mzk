@@ -1,5 +1,5 @@
 use super::bands::denormalise_bands;
-use crate::celt::Mode;
+use crate::opus::celt::Mode;
 
 const COMBFILTER_MINPERIOD: i32 = 15;
 const SIG_SAT: f32 = 300000000.0;

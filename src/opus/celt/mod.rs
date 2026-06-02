@@ -7,8 +7,8 @@ mod energy;
 mod synth;
 mod tables;
 
-use crate::mdct::Mdct;
-use crate::range::RangeDecoder;
+use crate::opus::mdct::Mdct;
+use crate::opus::range::RangeDecoder;
 use cwrs::log2_frac;
 use rate::PulseCache;
 use synth::{PostFilter, Synth};
@@ -393,12 +393,12 @@ mod tests {
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
             .collect();
 
-        let stream = crate::ogg::OpusStream::parse(&opus).unwrap();
+        let stream = crate::opus::ogg::OpusStream::parse(&opus).unwrap();
         let mode = Mode::new();
         let mut state = DecoderState::new(2);
         let mut got: Vec<f32> = Vec::new();
         for pkt in &stream.packets {
-            let cfg = crate::toc::Config::parse(pkt).unwrap();
+            let cfg = crate::opus::toc::Config::parse(pkt).unwrap();
             let frame = decode_frame(&mut state, &mode, cfg.frame, cfg.stereo);
             got.extend_from_slice(&frame);
         }

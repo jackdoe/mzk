@@ -1,15 +1,12 @@
 use crate::audio::PlatformSink;
-use crate::celt::{decode_frame, DecoderState, Mode};
+use crate::decoder::{open, Decoder};
 use crate::error::Result;
-use crate::ogg::OpusStream;
-use crate::pcm::{gain_from_q8, Ring};
+use crate::pcm::Ring;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const RATE: u64 = 48000;
-const FRAME: usize = 960;
 const RING_CAP: usize = 48000 * 2;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -148,73 +145,35 @@ fn shuffle_order(playlist: &[PathBuf], seed: u64) -> Vec<usize> {
     placed.into_iter().map(|(_, i)| i).collect()
 }
 
-struct Track {
-    stream: OpusStream,
-    dec: DecoderState,
-    idx: usize,
-    pre_skip: u64,
-    gain: f32,
-    emitted: u64,
+type Track = Box<dyn Decoder>;
+
+fn format_of(track: &Option<Track>) -> (u32, u32) {
+    match track {
+        Some(t) => (t.sample_rate(), t.channels() as u32),
+        None => (48000, 2),
+    }
 }
 
-impl Track {
-    fn open(path: &std::path::Path) -> Result<Track> {
-        let data = std::fs::read(path)?;
-        let stream = OpusStream::parse(&data)?;
-        let gain = gain_from_q8(stream.head.output_gain);
-        let pre_skip = stream.head.pre_skip as u64;
-        let channels = stream.head.channels.max(1) as usize;
-        Ok(Track {
-            stream,
-            dec: DecoderState::new(channels),
-            idx: 0,
-            pre_skip,
-            gain,
-            emitted: 0,
-        })
+fn reopen_sink(
+    sink: &mut PlatformSink,
+    ring: &Ring,
+    cur: &mut (u32, u32),
+    track: &Option<Track>,
+) {
+    let want = format_of(track);
+    if want == *cur {
+        return;
     }
-
-    fn total_frames(&self) -> u64 {
-        self.stream.total_samples
+    sink.stop();
+    *sink = PlatformSink::new(ring.reader(), want.0, want.1);
+    if let Err(e) = sink.start() {
+        eprintln!("mzk: audio unavailable: {e}");
     }
-
-    fn pos_frames(&self) -> u64 {
-        self.emitted.saturating_sub(self.stream.head.pre_skip as u64)
-    }
-
-    fn seek(&mut self, target_frames: u64) {
-        let pkt = (target_frames / FRAME as u64) as usize;
-        self.idx = pkt.min(self.stream.packets.len());
-        self.dec.reset();
-        self.pre_skip = 0;
-        self.emitted = self.idx as u64 * FRAME as u64;
-    }
-
-    fn next(&mut self, mode: &Mode) -> Option<Vec<f32>> {
-        if self.idx >= self.stream.packets.len() {
-            return None;
-        }
-        let pkt = self.stream.packets[self.idx].clone();
-        self.idx += 1;
-        let cfg = match crate::toc::Config::parse(&pkt) {
-            Ok(c) => c,
-            Err(_) => return Some(Vec::new()),
-        };
-        let frame = decode_frame(&mut self.dec, mode, cfg.frame, cfg.stereo);
-        self.emitted += FRAME as u64;
-        let mut drop = 0usize;
-        if self.pre_skip > 0 {
-            let d = (self.pre_skip as usize).min(FRAME);
-            self.pre_skip -= d as u64;
-            drop = d * 2;
-        }
-        let out: Vec<f32> = frame[drop..].iter().map(|&s| s * self.gain).collect();
-        Some(out)
-    }
+    ring.writer().clear();
+    *cur = want;
 }
 
 fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>) {
-    let mode = Mode::new();
     let ring = Ring::new(RING_CAP);
     let writer = ring.writer();
 
@@ -229,7 +188,8 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
     let mut track = open_index(&playlist, order[order_pos], &status);
     update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, 0);
 
-    let mut sink = PlatformSink::new(ring.reader());
+    let mut cur_format = format_of(&track);
+    let mut sink = PlatformSink::new(ring.reader(), cur_format.0, cur_format.1);
     if let Err(e) = sink.start() {
         eprintln!("mzk: audio unavailable: {e}");
     }
@@ -274,6 +234,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                 Command::Next => {
                     advance(&mut order_pos, n, repeat, 1);
                     track = open_index(&playlist, order[order_pos], &status);
+                    reopen_sink(&mut sink, &ring, &mut cur_format, &track);
                     pending.clear();
                     writer.clear();
                     sink.flush();
@@ -282,6 +243,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                 Command::Prev => {
                     advance(&mut order_pos, n, repeat, -1);
                     track = open_index(&playlist, order[order_pos], &status);
+                    reopen_sink(&mut sink, &ring, &mut cur_format, &track);
                     pending.clear();
                     writer.clear();
                     sink.flush();
@@ -291,6 +253,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                     if i < n {
                         order_pos = order.iter().position(|&x| x == i).unwrap_or(0);
                         track = open_index(&playlist, order[order_pos], &status);
+                        reopen_sink(&mut sink, &ring, &mut cur_format, &track);
                         pending.clear();
                         writer.clear();
                         sink.flush();
@@ -300,22 +263,26 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                 }
                 Command::SeekTo(secs) => {
                     if let Some(t) = track.as_mut() {
-                        t.seek(secs * RATE);
+                        let rate = t.sample_rate() as u64;
+                        let ch = t.channels() as u64;
+                        t.seek(secs * rate);
                         pending.clear();
                         writer.clear();
                         sink.flush();
-                        pushed = t.pos_frames() * 2;
+                        pushed = t.pos_frames() * ch;
                     }
                 }
                 Command::Seek(delta) => {
                     if let Some(t) = track.as_mut() {
+                        let rate = t.sample_rate() as u64;
+                        let ch = t.channels() as u64;
                         let cur = t.pos_frames() as i64;
-                        let tgt = (cur + delta * RATE as i64).max(0) as u64;
+                        let tgt = (cur + delta * rate as i64).max(0) as u64;
                         t.seek(tgt);
                         pending.clear();
                         writer.clear();
                         sink.flush();
-                        pushed = t.pos_frames() * 2;
+                        pushed = t.pos_frames() * ch;
                     }
                 }
             }
@@ -331,7 +298,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
         if !paused {
             if let Some(t) = track.as_mut() {
                 if pending.is_empty() {
-                    match t.next(&mode) {
+                    match t.next() {
                         Some(s) => {
                             pending = s;
                             worked = true;
@@ -345,6 +312,10 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                             } else {
                                 track = open_index(&playlist, order[order_pos], &status);
                             }
+                            reopen_sink(&mut sink, &ring, &mut cur_format, &track);
+                            pending.clear();
+                            writer.clear();
+                            sink.flush();
                             pushed = 0;
                         }
                     }
@@ -374,7 +345,7 @@ fn open_index(
     idx: usize,
     status: &Arc<Mutex<Status>>,
 ) -> Option<Track> {
-    match Track::open(&playlist[idx]) {
+    match open(&playlist[idx]) {
         Ok(t) => Some(t),
         Err(e) => {
             eprintln!("mzk: {}: {e}", playlist[idx].display());
@@ -423,8 +394,10 @@ fn update_status(
     s.repeat = repeat;
     s.paused = paused;
     if let Some(t) = track {
-        s.total = t.total_frames() / (RATE / 1000) / 1000;
-        s.pos = (consumed_samples / 2 / RATE).min(s.total.max(1));
+        let rate = t.sample_rate() as u64;
+        let ch = t.channels() as u64;
+        s.total = t.duration_frames() / rate;
+        s.pos = (consumed_samples / ch / rate).min(s.total.max(1));
     }
 }
 

@@ -1,6 +1,6 @@
 use super::tables::MAX_FINE_BITS;
 use super::Mode;
-use crate::range::RangeDecoder;
+use crate::opus::range::RangeDecoder;
 
 const LAPLACE_MINP: u32 = 1;
 const LAPLACE_LOG_MINP: u32 = 0;

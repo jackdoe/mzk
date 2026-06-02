@@ -1,5 +1,5 @@
 use super::cwrs::decode_pulses;
-use crate::range::RangeDecoder;
+use crate::opus::range::RangeDecoder;
 
 const EPSILON: f32 = 1e-15;
 const SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
