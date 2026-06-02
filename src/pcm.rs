@@ -120,4 +120,35 @@ mod tests {
         assert_eq!(r.pop(&mut out), 3);
         assert_eq!(out, [1.0, 2.0, 3.0]);
     }
+
+    #[test]
+    fn ring_concurrent_spsc() {
+        const N: usize = 300;
+        let ring = Ring::new(64);
+        let w = ring.writer();
+        let r = ring.reader();
+        let producer = std::thread::spawn(move || {
+            let mut i = 0usize;
+            while i < N {
+                if w.push(&[i as f32]) == 1 {
+                    i += 1;
+                } else {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        let mut got = Vec::with_capacity(N);
+        let mut buf = [0.0f32; 1];
+        while got.len() < N {
+            if r.pop(&mut buf) == 1 {
+                got.push(buf[0]);
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        producer.join().unwrap();
+        for (i, v) in got.iter().enumerate() {
+            assert_eq!(*v, i as f32);
+        }
+    }
 }
