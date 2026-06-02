@@ -8,23 +8,36 @@ fn decode_symbol(bs: &mut Bits, table: usize) -> (i32, i32, i32, i32) {
         return (0, 0, 0, 0);
     }
     let off = off as usize;
+    let len = HUFF_TREE.len();
     let mut point = 0usize;
     loop {
+        if off + point >= len {
+            return (0, 0, 0, 0);
+        }
         let node = HUFF_TREE[off + point];
         if node & 0xff00 == 0 {
             break;
         }
         if bs.get_bits(1) == 1 {
-            while HUFF_TREE[off + point] & 0xff >= 250 {
+            while off + point < len && HUFF_TREE[off + point] & 0xff >= 250 {
                 point += (HUFF_TREE[off + point] & 0xff) as usize;
+            }
+            if off + point >= len {
+                return (0, 0, 0, 0);
             }
             point += (HUFF_TREE[off + point] & 0xff) as usize;
         } else {
-            while HUFF_TREE[off + point] >> 8 >= 250 {
+            while off + point < len && HUFF_TREE[off + point] >> 8 >= 250 {
                 point += (HUFF_TREE[off + point] >> 8) as usize;
+            }
+            if off + point >= len {
+                return (0, 0, 0, 0);
             }
             point += (HUFF_TREE[off + point] >> 8) as usize;
         }
+    }
+    if off + point >= len {
+        return (0, 0, 0, 0);
     }
     let node = HUFF_TREE[off + point];
     let mut x = ((node >> 4) & 0xf) as i32;

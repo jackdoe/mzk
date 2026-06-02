@@ -1,4 +1,6 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+const MAX_FILE: u64 = 512 << 20;
 
 pub trait Decoder: Send {
     fn next(&mut self) -> Option<Vec<f32>>;
@@ -10,6 +12,9 @@ pub trait Decoder: Send {
 }
 
 pub fn open(path: &std::path::Path) -> Result<Box<dyn Decoder>> {
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_FILE {
+        return Err(Error::Unsupported("file too large"));
+    }
     let ext = path
         .extension()
         .map(|e| e.to_ascii_lowercase())

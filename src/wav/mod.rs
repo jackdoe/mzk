@@ -199,5 +199,36 @@ mod tests {
         }
         assert!(checked > 0, "no wav fixtures found");
     }
+
+    #[test]
+    fn fuzz_decode_never_panics() {
+        crate::fuzz::each_case(8000, 1024, |data| {
+            if let Ok(mut dec) = WavDecoder::from_bytes(data.to_vec()) {
+                for _ in 0..64 {
+                    if dec.next().is_none() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_decode_with_riff_prefix_never_panics() {
+        crate::fuzz::each_case(8000, 1024, |data| {
+            let mut framed = Vec::with_capacity(data.len() + 12);
+            framed.extend_from_slice(b"RIFF");
+            framed.extend_from_slice(&(data.len() as u32 + 4).to_le_bytes());
+            framed.extend_from_slice(b"WAVE");
+            framed.extend_from_slice(data);
+            if let Ok(mut dec) = WavDecoder::from_bytes(framed) {
+                for _ in 0..64 {
+                    if dec.next().is_none() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
 }
 

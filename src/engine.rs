@@ -244,7 +244,10 @@ fn save_favorites(favorites: &HashSet<PathBuf>) {
             out.push_str(&path.to_string_lossy());
             out.push('\n');
         }
-        let _ = std::fs::write(p, out);
+        let tmp = p.with_extension("tmp");
+        if std::fs::write(&tmp, out).is_ok() {
+            let _ = std::fs::rename(&tmp, &p);
+        }
     }
 }
 
@@ -274,9 +277,16 @@ fn build_order(
         (0..n).collect()
     };
     if fav_only {
-        base.into_iter()
+        let favs: Vec<usize> = base
+            .iter()
+            .copied()
             .filter(|&i| favorites.contains(&canon[i]))
-            .collect()
+            .collect();
+        if favs.is_empty() {
+            base
+        } else {
+            favs
+        }
     } else {
         base
     }
@@ -330,12 +340,11 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
     let mut paused = false;
     let mut shown_idx = usize::MAX;
 
-    let mut order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
-    if fav_only && order.is_empty() {
+    if fav_only && !canon.iter().any(|p| favorites.contains(p)) {
         eprintln!("mzk: no favorites among loaded tracks");
         fav_only = false;
-        order = build_order(&playlist, &canon, &favorites, shuffle, false, seed);
     }
+    let mut order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
     let mut order_pos = 0usize;
 
     let mut track = open_index(&playlist, order[order_pos], &status);
@@ -401,10 +410,6 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
                     if fav_only {
                         let cur = order.get(order_pos).copied().unwrap_or(0);
                         order = build_order(&playlist, &canon, &favorites, shuffle, fav_only, seed);
-                        if order.is_empty() {
-                            fav_only = false;
-                            order = build_order(&playlist, &canon, &favorites, shuffle, false, seed);
-                        }
                         order_pos = order.iter().position(|&x| x == cur).unwrap_or(0);
                     }
                 }
@@ -443,7 +448,7 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
                     if let Some(t) = track.as_mut() {
                         let rate = t.sample_rate() as u64;
                         let ch = t.channels() as u64;
-                        t.seek(secs * rate);
+                        t.seek(secs.saturating_mul(rate));
                         pending.clear();
                         writer.clear();
                         sink.flush();
@@ -455,7 +460,7 @@ fn run(playlist: Vec<PathBuf>, settings: Settings, rx: Receiver<Command>, status
                         let rate = t.sample_rate() as u64;
                         let ch = t.channels() as u64;
                         let cur = t.pos_frames() as i64;
-                        let tgt = (cur + delta * rate as i64).max(0) as u64;
+                        let tgt = cur.saturating_add(delta.saturating_mul(rate as i64)).max(0) as u64;
                         t.seek(tgt);
                         pending.clear();
                         writer.clear();
@@ -587,8 +592,8 @@ fn update_status(
     s.repeat = repeat;
     s.paused = paused;
     if let Some(t) = track {
-        let rate = t.sample_rate() as u64;
-        let ch = t.channels() as u64;
+        let rate = (t.sample_rate() as u64).max(1);
+        let ch = (t.channels() as u64).max(1);
         s.rate = t.sample_rate();
         s.channels = t.channels() as u32;
         s.total = t.duration_frames() / rate;

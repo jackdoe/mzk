@@ -131,6 +131,10 @@ impl Mp3Decoder {
                 return None;
             }
         }
+        if frame_size < HDR_SIZE + 1 {
+            self.pos += i + frame_size;
+            return None;
+        }
 
         let fstart = self.pos + i;
         let h = [

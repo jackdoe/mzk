@@ -146,6 +146,10 @@ pub fn find_frame(mp3: &[u8], free_format_bytes: &mut usize) -> (usize, usize) {
             while fb == 0 && k < MAX_FREE_FORMAT_FRAME_SIZE && i + 2 * k < mp3_bytes - HDR_SIZE {
                 if compare(h, &mp3[i + k..]) {
                     let cand = k - padding(h);
+                    if cand < HDR_SIZE {
+                        k += 1;
+                        continue;
+                    }
                     let nextfb = cand + padding(&mp3[i + k..]);
                     if i + k + nextfb + HDR_SIZE > mp3_bytes || !compare(h, &mp3[i + k + nextfb..]) {
                         k += 1;

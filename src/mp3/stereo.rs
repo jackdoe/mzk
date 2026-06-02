@@ -1,5 +1,5 @@
 use super::header::{
-    is_ms_stereo, test_i_stereo, test_mpeg1, test_ms_stereo,
+    is_mono, is_ms_stereo, test_i_stereo, test_mpeg1, test_ms_stereo,
 };
 use super::requant::ldexp_q2;
 use super::sideinfo::GrInfo;
@@ -157,9 +157,28 @@ pub fn antialias(grbuf: &mut [f32], gb: usize, nbands: usize) {
 }
 
 pub fn apply_stereo(grbuf: &mut [f32], ist_pos: &mut [u8], gr: &[GrInfo], hdr: &[u8]) {
+    if is_mono(hdr) || gr.len() < 2 {
+        return;
+    }
     if test_i_stereo(hdr) {
         intensity_stereo(grbuf, ist_pos, gr, hdr);
     } else if is_ms_stereo(hdr) {
         midside_stereo(grbuf, 0, 576);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mono_intensity_does_not_index_second_granule() {
+        let hdr = [0xff_u8, 0xfb, 0x90, 0xd0];
+        assert!(is_mono(&hdr));
+        assert!(test_i_stereo(&hdr));
+        let mut grbuf = [0.0f32; 1152];
+        let mut ist_pos = [0u8; 39];
+        let gr = [GrInfo::default()];
+        apply_stereo(&mut grbuf, &mut ist_pos, &gr, &hdr);
     }
 }

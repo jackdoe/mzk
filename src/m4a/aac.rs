@@ -38,6 +38,7 @@ impl<'a> Br<'a> {
         self.limit.saturating_sub(self.pos)
     }
     fn peek(&self, n: u32) -> u32 {
+        let n = n.min(32);
         let base = self.pos >> 3;
         let mut acc = 0u64;
         for i in 0..5 {
@@ -45,7 +46,11 @@ impl<'a> Br<'a> {
             acc = (acc << 8) | b;
         }
         let off = (self.pos & 7) as u32;
-        ((acc >> (40 - off - n)) & ((1u64 << n) - 1)) as u32
+        let shift = match 40u32.checked_sub(off + n) {
+            Some(s) => s,
+            None => return 0,
+        };
+        ((acc >> shift) & ((1u64 << n) - 1)) as u32
     }
     fn skip(&mut self, n: u32) {
         self.pos += n as usize;
@@ -407,6 +412,7 @@ impl Aac {
             swb = AAC_SWB_OFFSET_1024[self.srindex];
             num_swb = AAC_NUM_SWB_1024[self.srindex] as usize;
         }
+        let max_sfb = max_sfb.min(num_swb);
         Ics {
             window_sequence,
             window_shape,
@@ -432,6 +438,7 @@ impl Aac {
             let mut k = 0;
             while k < ics.max_sfb {
                 let cb = br.bits(4) as u8;
+                let cb = if cb == 12 { 0 } else { cb };
                 let mut len = 0u32;
                 loop {
                     let inc = br.bits(bits);
@@ -542,7 +549,10 @@ impl Aac {
                     while k < width {
                         decode_tuple(br, cb, &mut tup);
                         for d in 0..dim {
-                            ics.coef[base + k + d] = tup[d] as f32;
+                            let p = base + k + d;
+                            if p < ics.coef.len() {
+                                ics.coef[p] = tup[d] as f32;
+                            }
                         }
                         k += dim;
                     }

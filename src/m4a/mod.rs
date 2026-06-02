@@ -31,7 +31,7 @@ impl M4aDecoder {
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
         let mp4 = mp4::demux(&data)?;
         let (audio, frame_length) = match &mp4.codec {
-            Codec::Alac(cfg) => (Audio::Alac(Alac::new(cfg)), cfg.frame_length as u64),
+            Codec::Alac(cfg) => (Audio::Alac(Alac::new(cfg)?), cfg.frame_length as u64),
             Codec::Aac(cfg) => (Audio::Aac(Aac::new(cfg)?), cfg.frame_length as u64),
         };
         Ok(M4aDecoder {
@@ -52,7 +52,7 @@ impl Decoder for M4aDecoder {
         }
         let (off, len) = self.mp4.samples[self.idx];
         self.idx += 1;
-        if off + len > self.data.len() {
+        if off.checked_add(len).map_or(true, |e| e > self.data.len()) {
             return None;
         }
         let pkt = &self.data[off..off + len];
@@ -152,6 +152,31 @@ mod tests {
             assert_eq!(m.channels, 2, "{:?}", path);
             assert!(matches!(m.codec, Codec::Alac(_)));
             assert!(m.samples.len() > 100, "{:?}", path);
+        }
+    }
+
+    #[test]
+    fn fuzz_demux_and_decode_never_panic() {
+        let prefixes: [&[u8]; 3] = [
+            &[],
+            b"\x00\x00\x00\x14ftypM4A \x00\x00\x00\x00M4A mp42",
+            b"\x00\x00\x00\x08moov",
+        ];
+        for prefix in prefixes {
+            crate::fuzz::each_case(4000, 512, |data| {
+                let mut buf = Vec::with_capacity(prefix.len() + data.len());
+                buf.extend_from_slice(prefix);
+                buf.extend_from_slice(data);
+                let _ = mp4::demux(&buf);
+                if let Ok(mut dec) = M4aDecoder::from_bytes(buf) {
+                    for _ in 0..32 {
+                        match dec.next() {
+                            Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                            None => break,
+                        }
+                    }
+                }
+            });
         }
     }
 

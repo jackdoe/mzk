@@ -137,7 +137,7 @@ pub fn split_frames(pkt: &[u8]) -> Result<(Toc, Vec<(usize, usize)>)> {
     }
 
     for &(start, n) in &frames {
-        if n > MAX_FRAME || start + n > pkt.len() {
+        if n > MAX_FRAME || start.checked_add(n).map_or(true, |e| e > pkt.len()) {
             return Err(Error::BadOpus("frame out of bounds"));
         }
     }

@@ -70,6 +70,9 @@ pub struct OpusStream {
     pub total_samples: u64,
 }
 
+const MAX_PACKET_LEN: usize = 8 << 20;
+const MAX_PACKETS: usize = 1 << 20;
+
 fn reassemble(data: &[u8]) -> Result<(Vec<Vec<u8>>, i64)> {
     let mut packets = Vec::new();
     let mut cur: Vec<u8> = Vec::new();
@@ -82,9 +85,15 @@ fn reassemble(data: &[u8]) -> Result<(Vec<Vec<u8>>, i64)> {
         let mut off = 0usize;
         for &l in pg.lacing {
             let l = l as usize;
+            if cur.len() + l > MAX_PACKET_LEN {
+                return Err(Error::BadOgg("packet too large"));
+            }
             cur.extend_from_slice(&pg.body[off..off + l]);
             off += l;
             if l < 255 {
+                if packets.len() >= MAX_PACKETS {
+                    return Err(Error::BadOgg("too many packets"));
+                }
                 packets.push(std::mem::take(&mut cur));
             }
         }

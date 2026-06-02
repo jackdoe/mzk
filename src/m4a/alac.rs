@@ -1,4 +1,5 @@
 use super::mp4::AlacConfig;
+use crate::error::{Error, Result};
 
 pub struct Alac {
     frame_length: u32,
@@ -24,7 +25,7 @@ impl Br<'_> {
 
     fn read(&mut self, n: u32) -> u32 {
         let mut v = 0u32;
-        for _ in 0..n {
+        for _ in 0..n.min(32) {
             v = (v << 1) | self.read1();
         }
         v
@@ -71,14 +72,18 @@ fn decode_value(br: &mut Br, sample_size: u32, k: i32) -> u32 {
 }
 
 impl Alac {
-    pub fn new(cfg: &AlacConfig) -> Self {
-        Alac {
+    pub fn new(cfg: &AlacConfig) -> Result<Self> {
+        let bit_depth = cfg.bit_depth as u32;
+        if !(1..=32).contains(&bit_depth) || cfg.kb >= 32 || cfg.frame_length > (1 << 20) {
+            return Err(Error::Unsupported("alac: invalid cookie"));
+        }
+        Ok(Alac {
             frame_length: cfg.frame_length,
-            bit_depth: cfg.bit_depth as u32,
+            bit_depth,
             pb: cfg.pb as u32,
             mb: cfg.mb as u32,
             kb: cfg.kb as i32,
-        }
+        })
     }
 
     pub fn reset(&mut self) {}
@@ -144,7 +149,7 @@ impl Alac {
         for i in 1..=num {
             out[i] = sign_extend(out[i - 1] + err[i], sample_size);
         }
-        let denhalf = 1i64 << (quant - 1);
+        let denhalf = if quant == 0 { 0 } else { 1i64 << (quant - 1) };
         for i in (num + 1)..n {
             let top = out[i - num - 1];
             let mut sum = 0i64;
@@ -206,17 +211,23 @@ impl Alac {
         let bytes_shifted = br.read(2);
         let escape = br.read(1);
         let shift = bytes_shifted * 8;
+        if shift > self.bit_depth {
+            return Vec::new();
+        }
         let n = if partial == 1 {
             br.read(32) as usize
         } else {
             self.frame_length as usize
         };
+        if partial == 1 && n > self.frame_length as usize {
+            return Vec::new();
+        }
 
         let scale = 1.0 / (1u64 << (self.bit_depth - 1)) as f32;
         let mut out = vec![0.0f32; n * channels];
 
         if channels == 2 {
-            let read_size = self.bit_depth - shift + 1;
+            let read_size = (self.bit_depth - shift + 1).min(32);
             let mut bufa = vec![0i32; n];
             let mut bufb = vec![0i32; n];
             let mut mix_bits = 0u32;
@@ -265,7 +276,7 @@ impl Alac {
                 out[i * 2 + 1] = r as f32 * scale;
             }
         } else {
-            let read_size = self.bit_depth - shift;
+            let read_size = (self.bit_depth - shift).min(32);
             let mut buf = vec![0i32; n];
             let mut sh = vec![0i32; n];
             if escape == 0 {

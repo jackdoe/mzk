@@ -193,7 +193,12 @@ impl FlacDecoder {
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
         let (info, first_frame) = parse_metadata(&data)?;
-        if info.channels == 0 || info.bps == 0 || info.sample_rate == 0 {
+        if info.channels == 0
+            || info.channels > 8
+            || info.bps == 0
+            || info.bps > 32
+            || info.sample_rate == 0
+        {
             return Err(Error::Decode("flac: invalid stream info"));
         }
         Ok(FlacDecoder {
@@ -205,13 +210,25 @@ impl FlacDecoder {
         })
     }
 
-    fn read_residual(&self, br: &mut BitReader, buf: &mut [i64], order: usize, blocksize: usize) {
+    fn read_residual(
+        &self,
+        br: &mut BitReader,
+        buf: &mut [i64],
+        order: usize,
+        blocksize: usize,
+    ) -> Option<()> {
         let method = br.read(2);
         let param_bits = if method == 1 { 5 } else { 4 };
         let escape = (1u64 << param_bits) - 1;
         let partition_order = br.read(4) as usize;
         let partitions = 1usize << partition_order;
+        if partitions > blocksize {
+            return None;
+        }
         let part_len = blocksize >> partition_order;
+        if (part_len << partition_order) != blocksize || part_len < order {
+            return None;
+        }
         let mut idx = order;
         for p in 0..partitions {
             let count = if p == 0 { part_len - order } else { part_len };
@@ -219,11 +236,17 @@ impl FlacDecoder {
             if param == escape {
                 let raw = br.read(5) as u32;
                 for _ in 0..count {
+                    if idx >= buf.len() {
+                        return None;
+                    }
                     buf[idx] = br.read_signed(raw);
                     idx += 1;
                 }
             } else {
                 for _ in 0..count {
+                    if idx >= buf.len() {
+                        return None;
+                    }
                     let q = br.read_unary() as u64;
                     let r = br.read(param as u32);
                     let val = (q << param) | r;
@@ -232,14 +255,18 @@ impl FlacDecoder {
                 }
             }
         }
+        Some(())
     }
 
-    fn read_subframe(&self, br: &mut BitReader, buf: &mut [i64], bps: u32) {
+    fn read_subframe(&self, br: &mut BitReader, buf: &mut [i64], bps: u32) -> Option<()> {
         let blocksize = buf.len();
         br.read(1);
         let kind = br.read(6) as u32;
         let flag = br.read(1);
         let wasted = if flag == 1 { br.read_unary() + 1 } else { 0 };
+        if wasted >= bps {
+            return None;
+        }
         let bps = bps - wasted;
 
         if kind == 0 {
@@ -258,18 +285,21 @@ impl FlacDecoder {
             }
             let precision = br.read(4) as u32 + 1;
             let shift = br.read_signed(5) as i32;
+            if shift < 0 || shift >= 64 {
+                return None;
+            }
             let mut coefs = [0i64; 32];
             for c in coefs.iter_mut().take(order) {
                 *c = br.read_signed(precision);
             }
-            self.read_residual(br, buf, order, blocksize);
+            self.read_residual(br, buf, order, blocksize)?;
             lpc_restore(buf, &coefs, shift, order);
         } else if kind >= 8 {
             let order = (kind & 0x07) as usize;
             for s in buf.iter_mut().take(order) {
                 *s = br.read_signed(bps);
             }
-            self.read_residual(br, buf, order, blocksize);
+            self.read_residual(br, buf, order, blocksize)?;
             fixed_restore(buf, order);
         }
 
@@ -278,6 +308,7 @@ impl FlacDecoder {
                 *s <<= wasted;
             }
         }
+        Some(())
     }
 
     fn decode_frame(&mut self) -> Option<Vec<f32>> {
@@ -322,6 +353,9 @@ impl FlacDecoder {
         } else {
             BPS_TABLE[ss_code]
         };
+        if frame_bps == 0 || frame_bps > 32 {
+            return None;
+        }
         let channels = if ch_assign < 8 {
             ch_assign + 1
         } else {
@@ -337,7 +371,7 @@ impl FlacDecoder {
                 _ => frame_bps,
             };
             let mut buf = vec![0i64; blocksize];
-            self.read_subframe(&mut br, &mut buf, cbps);
+            self.read_subframe(&mut br, &mut buf, cbps)?;
             chans.push(buf);
         }
 
@@ -465,5 +499,36 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "no flac fixtures found");
+    }
+
+    #[test]
+    fn fuzz_decode_never_panics() {
+        crate::fuzz::each_case(8000, 1024, |data| {
+            if let Ok(mut dec) = FlacDecoder::from_bytes(data.to_vec()) {
+                for _ in 0..64 {
+                    match dec.next() {
+                        Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                        None => break,
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_decode_with_flac_prefix_never_panics() {
+        crate::fuzz::each_case(8000, 1024, |data| {
+            let mut framed = Vec::with_capacity(data.len() + 4);
+            framed.extend_from_slice(b"fLaC");
+            framed.extend_from_slice(data);
+            if let Ok(mut dec) = FlacDecoder::from_bytes(framed) {
+                for _ in 0..64 {
+                    match dec.next() {
+                        Some(f) => assert!(f.iter().all(|v| v.is_finite())),
+                        None => break,
+                    }
+                }
+            }
+        });
     }
 }

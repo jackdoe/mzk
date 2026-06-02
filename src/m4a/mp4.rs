@@ -30,7 +30,7 @@ const AAC_SAMPLE_RATES: [u32; 16] = [
 fn read_desc_len(d: &[u8], mut pos: usize) -> (usize, usize) {
     let mut len = 0usize;
     for _ in 0..4 {
-        let b = d[pos];
+        let b = *d.get(pos).unwrap_or(&0);
         pos += 1;
         len = (len << 7) | (b & 0x7f) as usize;
         if b & 0x80 == 0 {
@@ -40,35 +40,47 @@ fn read_desc_len(d: &[u8], mut pos: usize) -> (usize, usize) {
     (len, pos)
 }
 
-fn find_asc(d: &[u8], start: usize, end: usize) -> Option<(usize, usize)> {
+fn find_asc(d: &[u8], start: usize, end: usize, depth: u32) -> Option<(usize, usize)> {
+    if depth > 32 {
+        return None;
+    }
+    let end = end.min(d.len());
     let mut pos = start;
     while pos + 2 <= end {
         let tag = d[pos];
         let (len, body) = read_desc_len(d, pos + 1);
         let next = body + len;
-        if next > end {
+        if next > end || next <= pos {
             return None;
         }
         match tag {
             0x05 => return Some((body, next)),
             0x03 => {
+                if body + 3 > end {
+                    return None;
+                }
                 let flags = d[body + 2];
                 let mut p = body + 3;
                 if flags & 0x80 != 0 {
                     p += 2;
                 }
                 if flags & 0x40 != 0 {
+                    if p >= end {
+                        return None;
+                    }
                     p += 1 + d[p] as usize;
                 }
                 if flags & 0x20 != 0 {
                     p += 2;
                 }
-                if let Some(r) = find_asc(d, p, next) {
-                    return Some(r);
+                if p <= end {
+                    if let Some(r) = find_asc(d, p, next, depth + 1) {
+                        return Some(r);
+                    }
                 }
             }
             0x04 => {
-                if let Some(r) = find_asc(d, body + 13, next) {
+                if let Some(r) = find_asc(d, body + 13, next, depth + 1) {
                     return Some(r);
                 }
             }
@@ -125,7 +137,7 @@ pub struct Mp4 {
 fn be(d: &[u8], o: usize, n: usize) -> u64 {
     let mut v = 0u64;
     for i in 0..n {
-        v = (v << 8) | d[o + i] as u64;
+        v = (v << 8) | *d.get(o + i).unwrap_or(&0) as u64;
     }
     v
 }
@@ -155,12 +167,15 @@ fn boxes(data: &[u8], start: usize, end: usize) -> Vec<([u8; 4], usize, usize)> 
     out
 }
 
-fn find_stbl(data: &[u8], start: usize, end: usize) -> Option<(usize, usize)> {
+fn find_stbl(data: &[u8], start: usize, end: usize, depth: u32) -> Option<(usize, usize)> {
+    if depth > 32 {
+        return None;
+    }
     for (typ, body, next) in boxes(data, start, end) {
         match &typ {
             b"stbl" => return Some((body, next)),
             b"moov" | b"trak" | b"mdia" | b"minf" => {
-                if let Some(r) = find_stbl(data, body, next) {
+                if let Some(r) = find_stbl(data, body, next, depth + 1) {
                     return Some(r);
                 }
             }
@@ -209,7 +224,7 @@ fn parse_stsd(data: &[u8], start: usize, end: usize) -> Result<(Codec, usize, u3
     } else if format == b"mp4a" {
         let (eb, ee) = child(data, entry + 36, entry_end, b"esds")
             .ok_or(Error::Decode("mp4: no esds"))?;
-        let (asc_s, asc_e) = find_asc(data, eb + 4, ee).ok_or(Error::Decode("mp4: no asc"))?;
+        let (asc_s, asc_e) = find_asc(data, eb + 4, ee, 0).ok_or(Error::Decode("mp4: no asc"))?;
         let cfg = parse_asc(data, asc_s, asc_e, channels);
         Ok((Codec::Aac(cfg), channels, sample_rate))
     } else {
@@ -217,23 +232,28 @@ fn parse_stsd(data: &[u8], start: usize, end: usize) -> Result<(Codec, usize, u3
     }
 }
 
-fn parse_stsz(data: &[u8], start: usize) -> Vec<usize> {
+const MAX_SAMPLES: usize = 1 << 28;
+
+fn parse_stsz(data: &[u8], start: usize, end: usize) -> Vec<usize> {
     let sample_size = be(data, start + 4, 4) as usize;
     let count = be(data, start + 8, 4) as usize;
     if sample_size != 0 {
-        return vec![sample_size; count];
+        return vec![sample_size; count.min(MAX_SAMPLES).min(data.len())];
     }
+    let count = count.min(end.saturating_sub(start + 12) / 4);
     (0..count).map(|i| be(data, start + 12 + 4 * i, 4) as usize).collect()
 }
 
-fn parse_offsets(data: &[u8], start: usize, wide: bool) -> Vec<usize> {
+fn parse_offsets(data: &[u8], start: usize, end: usize, wide: bool) -> Vec<usize> {
     let count = be(data, start + 4, 4) as usize;
     let w = if wide { 8 } else { 4 };
+    let count = count.min(end.saturating_sub(start + 8) / w);
     (0..count).map(|i| be(data, start + 8 + w * i, w) as usize).collect()
 }
 
-fn parse_stsc(data: &[u8], start: usize) -> Vec<(usize, usize)> {
+fn parse_stsc(data: &[u8], start: usize, end: usize) -> Vec<(usize, usize)> {
     let count = be(data, start + 4, 4) as usize;
+    let count = count.min(end.saturating_sub(start + 8) / 12);
     (0..count)
         .map(|i| {
             let o = start + 8 + 12 * i;
@@ -243,19 +263,19 @@ fn parse_stsc(data: &[u8], start: usize) -> Vec<(usize, usize)> {
 }
 
 pub fn demux(data: &[u8]) -> Result<Mp4> {
-    let (sb, se) = find_stbl(data, 0, data.len()).ok_or(Error::Decode("mp4: no stbl"))?;
+    let (sb, se) = find_stbl(data, 0, data.len(), 0).ok_or(Error::Decode("mp4: no stbl"))?;
     let (stsd_b, stsd_e) = child(data, sb, se, b"stsd").ok_or(Error::Decode("mp4: no stsd"))?;
     let (codec, _channels, sd_rate) = parse_stsd(data, stsd_b, stsd_e)?;
 
     let sizes = child(data, sb, se, b"stsz")
-        .map(|(b, _)| parse_stsz(data, b))
+        .map(|(b, n)| parse_stsz(data, b, n))
         .ok_or(Error::Decode("mp4: no stsz"))?;
     let chunk_offsets = child(data, sb, se, b"stco")
-        .map(|(b, _)| parse_offsets(data, b, false))
-        .or_else(|| child(data, sb, se, b"co64").map(|(b, _)| parse_offsets(data, b, true)))
+        .map(|(b, n)| parse_offsets(data, b, n, false))
+        .or_else(|| child(data, sb, se, b"co64").map(|(b, n)| parse_offsets(data, b, n, true)))
         .ok_or(Error::Decode("mp4: no stco/co64"))?;
     let stsc = child(data, sb, se, b"stsc")
-        .map(|(b, _)| parse_stsc(data, b))
+        .map(|(b, n)| parse_stsc(data, b, n))
         .ok_or(Error::Decode("mp4: no stsc"))?;
 
     let num_chunks = chunk_offsets.len();
@@ -281,7 +301,10 @@ pub fn demux(data: &[u8]) -> Result<Mp4> {
                 break;
             }
             samples.push((off, sizes[si]));
-            off += sizes[si];
+            off = match off.checked_add(sizes[si]) {
+                Some(v) => v,
+                None => break,
+            };
             si += 1;
         }
     }
@@ -303,4 +326,54 @@ pub fn demux(data: &[u8]) -> Result<Mp4> {
         channels,
         samples,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stsz_var_count_bomb_is_capped() {
+        let mut d = vec![0u8; 16];
+        d[8] = 0xff;
+        d[9] = 0xff;
+        d[10] = 0xff;
+        d[11] = 0xff;
+        let v = parse_stsz(&d, 0, d.len());
+        assert!(v.len() <= d.len());
+    }
+
+    #[test]
+    fn stsz_const_count_bomb_is_capped() {
+        let mut d = vec![0u8; 16];
+        d[7] = 4;
+        d[8] = 0xff;
+        d[9] = 0xff;
+        d[10] = 0xff;
+        d[11] = 0xff;
+        let v = parse_stsz(&d, 0, d.len());
+        assert!(v.len() <= d.len());
+    }
+
+    #[test]
+    fn stco_count_bomb_is_capped() {
+        let mut d = vec![0u8; 16];
+        d[4] = 0xff;
+        d[5] = 0xff;
+        d[6] = 0xff;
+        d[7] = 0xff;
+        let v = parse_offsets(&d, 0, d.len(), false);
+        assert!(v.len() <= d.len());
+    }
+
+    #[test]
+    fn stsc_count_bomb_is_capped() {
+        let mut d = vec![0u8; 16];
+        d[4] = 0xff;
+        d[5] = 0xff;
+        d[6] = 0xff;
+        d[7] = 0xff;
+        let v = parse_stsc(&d, 0, d.len());
+        assert!(v.len() <= d.len());
+    }
 }
