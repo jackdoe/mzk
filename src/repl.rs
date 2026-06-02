@@ -51,29 +51,27 @@ fn print_ls(eng: &Engine, names: &[String], from: Option<usize>, count: Option<u
 
 fn help() {
     let rows = [
-        ("ls [from] [count]", "list tracks (windowed around current)"),
-        ("np", "now playing: track, progress, volume, modes"),
-        ("play <n>", "play track number n"),
-        ("pause", "toggle play / pause"),
-        ("n  / next", "skip to next track"),
-        ("p  / prev", "skip to previous track"),
-        ("vol <0-100>", "set volume percent (e.g. vol 70)"),
-        ("vol <+n|-n>", "raise / lower volume by n percent"),
-        ("seek <m:ss>", "jump to a time (e.g. seek 1:30)"),
-        ("seek <+n|-n>", "jump forward / back n seconds"),
-        ("shuffle <on|off>", "shuffle the play order"),
-        ("repeat <off|one|all>", "repeat nothing / this track / all"),
-        ("help", "show this list"),
-        ("q  / quit", "quit mzk"),
+        ("?", "help", "show this list"),
+        ("l", "ls [from] [count]", "list tracks (windowed around current)"),
+        ("c", "np", "now playing: track, format, progress, modes"),
+        ("g", "play <n>   (or just <n>)", "play track number n"),
+        (".", "pause", "toggle play / pause"),
+        ("n", "next", "skip to next track"),
+        ("p", "prev", "skip to previous track"),
+        ("v", "vol <0-100|+n|-n>", "set or adjust volume percent"),
+        ("k", "seek <m:ss|+n|-n>", "jump to a time, or by n seconds"),
+        ("s", "shuffle [on|off]", "toggle, or set, shuffle order"),
+        ("r", "repeat [off|one|all]", "cycle, or set, repeat mode"),
+        ("q", "quit", "quit mzk"),
     ];
-    for (cmd, desc) in rows {
-        println!("  {:<21} {}", cmd, desc);
+    for (key, cmd, desc) in rows {
+        println!("  [{}] {:<25} {}", key, cmd, desc);
     }
 }
 
 pub fn run(eng: Engine, names: Vec<PathBuf>) {
     let names = Engine::names(&names);
-    println!("mzk: {} tracks. type 'help'.", names.len());
+    println!("mzk: {} tracks. type 'help' or '?'.", names.len());
     print_np(&eng);
     let stdin = std::io::stdin();
     loop {
@@ -144,6 +142,20 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
             Parsed::Shuffle(on) => {
                 eng.send(Command::Shuffle(on));
                 println!("shuffle {}", if on { "on" } else { "off" });
+            }
+            Parsed::ShuffleToggle => {
+                let on = !eng.status().shuffle;
+                eng.send(Command::Shuffle(on));
+                println!("shuffle {}", if on { "on" } else { "off" });
+            }
+            Parsed::RepeatCycle => {
+                let next = match eng.status().repeat {
+                    Repeat::Off => Repeat::All,
+                    Repeat::All => Repeat::One,
+                    Repeat::One => Repeat::Off,
+                };
+                eng.send(Command::Repeat(next));
+                println!("repeat {}", repeat_word(next));
             }
             Parsed::Repeat(r) => {
                 let rep = match r.as_str() {

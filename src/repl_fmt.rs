@@ -104,7 +104,9 @@ pub enum Parsed {
     Seek(i64),
     SeekTo(u64),
     Shuffle(bool),
+    ShuffleToggle,
     Repeat(String),
+    RepeatCycle,
     Help,
     Quit,
 }
@@ -126,16 +128,16 @@ pub fn parse(line: &str) -> Option<Parsed> {
     let a = it.next();
     let b = it.next();
     match cmd {
-        "ls" => Some(Parsed::Ls(
+        "ls" | "l" => Some(Parsed::Ls(
             a.and_then(|x| x.parse().ok()),
             b.and_then(|x| x.parse().ok()),
         )),
-        "np" => Some(Parsed::Np),
-        "play" => Some(Parsed::Play(a.and_then(|x| x.parse().ok()))),
-        "pause" => Some(Parsed::Pause),
+        "np" | "c" => Some(Parsed::Np),
+        "play" | "g" => Some(Parsed::Play(a.and_then(|x| x.parse().ok()))),
+        "pause" | "." => Some(Parsed::Pause),
         "n" | "next" => Some(Parsed::Next),
         "p" | "prev" => Some(Parsed::Prev),
-        "vol" => {
+        "vol" | "v" => {
             let v = a?;
             if let Some(rest) = v.strip_prefix('+') {
                 Some(Parsed::VolDelta(rest.parse::<f32>().ok()? / 100.0))
@@ -145,7 +147,7 @@ pub fn parse(line: &str) -> Option<Parsed> {
                 Some(Parsed::Vol(v.parse::<f32>().ok()? / 100.0))
             }
         }
-        "seek" => {
+        "seek" | "k" => {
             let v = a?;
             if v.starts_with('+') {
                 Some(Parsed::Seek(v[1..].parse::<i64>().ok()?))
@@ -155,15 +157,20 @@ pub fn parse(line: &str) -> Option<Parsed> {
                 Some(Parsed::SeekTo(parse_clock(v)?))
             }
         }
-        "shuffle" => match a? {
-            "on" => Some(Parsed::Shuffle(true)),
-            "off" => Some(Parsed::Shuffle(false)),
+        "shuffle" | "s" => match a {
+            Some("on") => Some(Parsed::Shuffle(true)),
+            Some("off") => Some(Parsed::Shuffle(false)),
+            None => Some(Parsed::ShuffleToggle),
             _ => None,
         },
-        "repeat" => Some(Parsed::Repeat(a?.to_string())),
-        "help" => Some(Parsed::Help),
+        "repeat" | "r" => match a {
+            Some("off") | Some("one") | Some("all") => Some(Parsed::Repeat(a?.to_string())),
+            None => Some(Parsed::RepeatCycle),
+            _ => None,
+        },
+        "help" | "h" | "?" => Some(Parsed::Help),
         "q" | "quit" => Some(Parsed::Quit),
-        _ => None,
+        _ => cmd.parse::<usize>().ok().map(|n| Parsed::Play(Some(n))),
     }
 }
 
@@ -243,5 +250,28 @@ mod tests {
         assert_eq!(parse("repeat all"), Some(Parsed::Repeat("all".into())));
         assert_eq!(parse("shuffle on"), Some(Parsed::Shuffle(true)));
         assert_eq!(parse("bogus"), None);
+    }
+
+    #[test]
+    fn shortcuts() {
+        assert_eq!(parse("l"), Some(Parsed::Ls(None, None)));
+        assert_eq!(parse("c"), Some(Parsed::Np));
+        assert_eq!(parse("."), Some(Parsed::Pause));
+        assert_eq!(parse("g 3"), Some(Parsed::Play(Some(3))));
+        assert_eq!(parse("v 70"), Some(Parsed::Vol(0.7)));
+        assert_eq!(parse("k 1:30"), Some(Parsed::SeekTo(90)));
+        assert_eq!(parse("s"), Some(Parsed::ShuffleToggle));
+        assert_eq!(parse("s off"), Some(Parsed::Shuffle(false)));
+        assert_eq!(parse("s bogus"), None);
+        assert_eq!(parse("r"), Some(Parsed::RepeatCycle));
+        assert_eq!(parse("r one"), Some(Parsed::Repeat("one".into())));
+        assert_eq!(parse("?"), Some(Parsed::Help));
+        assert_eq!(parse("h"), Some(Parsed::Help));
+    }
+
+    #[test]
+    fn bare_number_plays_track() {
+        assert_eq!(parse("5"), Some(Parsed::Play(Some(5))));
+        assert_eq!(parse("12"), Some(Parsed::Play(Some(12))));
     }
 }
