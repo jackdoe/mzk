@@ -4,7 +4,7 @@ use crate::opus::range::RangeDecoder;
 const EPSILON: f32 = 1e-15;
 const SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
 
-fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
+fn rotate_pass(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     let ms = -s;
     for i in 0..len - stride {
         let x1 = x[i];
@@ -12,8 +12,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
         x[i + stride] = c * x2 + s * x1;
         x[i] = c * x1 + ms * x2;
     }
-    let start = len as isize - 2 * stride as isize - 1;
-    let mut idx = start;
+    let mut idx = len as isize - 2 * stride as isize - 1;
     while idx >= 0 {
         let i = idx as usize;
         let x1 = x[i];
@@ -24,7 +23,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     }
 }
 
-fn exp_rotation(x: &mut [f32], len: usize, dir: i32, stride: usize, k: i32, spread: i32) {
+fn undo_spreading(x: &mut [f32], len: usize, stride: usize, k: i32, spread: i32) {
     if 2 * k >= len as i32 || spread == 0 {
         return;
     }
@@ -34,49 +33,43 @@ fn exp_rotation(x: &mut [f32], len: usize, dir: i32, stride: usize, k: i32, spre
     let half_pi = 0.5 * std::f32::consts::PI;
     let c = (half_pi * theta).cos();
     let s = (half_pi * (1.0 - theta)).cos();
-    let mut stride2 = 0usize;
+
+    let mut interleave = 0usize;
     if len >= 8 * stride {
-        stride2 = 1;
-        while (stride2 * stride2 + stride2) * stride + (stride >> 2) < len {
-            stride2 += 1;
+        interleave = 1;
+        while (interleave * interleave + interleave) * stride + (stride >> 2) < len {
+            interleave += 1;
         }
     }
-    let len2 = len / stride;
+    let seg_len = len / stride;
     for i in 0..stride {
-        let seg = &mut x[i * len2..i * len2 + len2];
-        if dir < 0 {
-            if stride2 != 0 {
-                exp_rotation1(seg, len2, stride2, s, c);
-            }
-            exp_rotation1(seg, len2, 1, c, s);
-        } else {
-            exp_rotation1(seg, len2, 1, c, -s);
-            if stride2 != 0 {
-                exp_rotation1(seg, len2, stride2, s, -c);
-            }
+        let seg = &mut x[i * seg_len..i * seg_len + seg_len];
+        if interleave != 0 {
+            rotate_pass(seg, seg_len, interleave, s, c);
         }
+        rotate_pass(seg, seg_len, 1, c, s);
     }
 }
 
-fn normalise_residual(iy: &[i32], x: &mut [f32], n: usize, ryy: f32, gain: f32) {
-    let g = gain / ryy.sqrt();
+fn scale_to_unit_norm(iy: &[i32], x: &mut [f32], n: usize, energy: f32, gain: f32) {
+    let g = gain / energy.sqrt();
     for i in 0..n {
         x[i] = g * iy[i] as f32;
     }
 }
 
-fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
-    if b <= 1 {
+fn collapse_mask(iy: &[i32], n: usize, blocks: usize) -> u32 {
+    if blocks <= 1 {
         return 1;
     }
-    let n0 = n / b;
+    let per_block = n / blocks;
     let mut mask = 0u32;
-    for i in 0..b {
-        let mut tmp = 0i32;
-        for j in 0..n0 {
-            tmp |= iy[i * n0 + j];
+    for b in 0..blocks {
+        let mut any = 0i32;
+        for j in 0..per_block {
+            any |= iy[b * per_block + j];
         }
-        mask |= ((tmp != 0) as u32) << i;
+        mask |= ((any != 0) as u32) << b;
     }
     mask
 }
@@ -86,15 +79,15 @@ pub fn alg_unquant(
     n: usize,
     k: i32,
     spread: i32,
-    b: usize,
+    blocks: usize,
     dec: &mut RangeDecoder,
     gain: f32,
 ) -> u32 {
     let mut iy = vec![0i32; n];
-    let ryy = decode_pulses(&mut iy, n, k as usize, dec);
-    normalise_residual(&iy, x, n, ryy, gain);
-    exp_rotation(x, n, -1, b, k, spread);
-    extract_collapse_mask(&iy, n, b)
+    let energy = decode_pulses(&mut iy, n, k as usize, dec);
+    scale_to_unit_norm(&iy, x, n, energy, gain);
+    undo_spreading(x, n, blocks, k, spread);
+    collapse_mask(&iy, n, blocks)
 }
 
 pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {

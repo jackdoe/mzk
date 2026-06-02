@@ -116,7 +116,7 @@ pub fn decode_coarse(
     intra: bool,
     channels: usize,
     lm: usize,
-    old: &mut [f32],
+    band_e: &mut [f32],
 ) {
     let prob = &E_PROB_MODEL[lm][intra as usize];
     let (coef, beta) = if intra {
@@ -143,9 +143,9 @@ pub fn decode_coarse(
             };
             let q = qi as f32;
             let idx = i + c * nb;
-            old[idx] = (-9.0f32).max(old[idx]);
-            let tmp = coef * old[idx] + prev[c] + q;
-            old[idx] = tmp;
+            band_e[idx] = (-9.0f32).max(band_e[idx]);
+            let tmp = coef * band_e[idx] + prev[c] + q;
+            band_e[idx] = tmp;
             prev[c] = prev[c] + q - beta * q;
         }
     }
@@ -158,7 +158,7 @@ pub fn decode_fine(
     end: usize,
     fine_quant: &[i32],
     channels: usize,
-    old: &mut [f32],
+    band_e: &mut [f32],
 ) {
     let nb = mode.nb_ebands;
     for i in start..end {
@@ -169,7 +169,7 @@ pub fn decode_fine(
             let q2 = rd.dec_bits(fine_quant[i] as u32) as f32;
             let offset =
                 (q2 + 0.5) * (1u32 << (14 - fine_quant[i])) as f32 * (1.0 / 16384.0) - 0.5;
-            old[i + c * nb] += offset;
+            band_e[i + c * nb] += offset;
         }
     }
 }
@@ -183,7 +183,7 @@ pub fn decode_final(
     fine_priority: &[i32],
     mut bits_left: i32,
     channels: usize,
-    old: &mut [f32],
+    band_e: &mut [f32],
 ) {
     let nb = mode.nb_ebands;
     for prio in 0..2 {
@@ -196,7 +196,7 @@ pub fn decode_final(
             for c in 0..channels {
                 let q2 = rd.dec_bits(1) as f32;
                 let offset = (q2 - 0.5) * (1u32 << (14 - fine_quant[i] - 1)) as f32 * (1.0 / 16384.0);
-                old[i + c * nb] += offset;
+                band_e[i + c * nb] += offset;
                 bits_left -= 1;
             }
             i += 1;
@@ -213,8 +213,8 @@ mod tests {
         let mode = Mode::new();
         let buf = [0x33u8; 64];
         let mut rd = RangeDecoder::new(&buf);
-        let mut old = vec![0.0f32; mode.nb_ebands * 2];
-        decode_coarse(&mut rd, &mode, 0, mode.nb_ebands, true, 1, 3, &mut old);
-        assert!(old.iter().all(|v| v.is_finite()));
+        let mut band_e = vec![0.0f32; mode.nb_ebands * 2];
+        decode_coarse(&mut rd, &mode, 0, mode.nb_ebands, true, 1, 3, &mut band_e);
+        assert!(band_e.iter().all(|v| v.is_finite()));
     }
 }

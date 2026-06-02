@@ -53,47 +53,35 @@ pub fn fits_in32(n: i32, k: i32) -> bool {
     }
 }
 
-fn unext(ui: &mut [u32], len: usize, mut ui0: u32) {
-    let mut j = 1;
-    loop {
-        let ui1 = ui[j].wrapping_add(ui[j - 1]).wrapping_add(ui0);
-        ui[j - 1] = ui0;
-        ui0 = ui1;
-        j += 1;
-        if j >= len {
-            break;
-        }
+fn row_extend(row: &mut [u32], len: usize, mut carry: u32) {
+    for j in 1..len {
+        let next = row[j].wrapping_add(row[j - 1]).wrapping_add(carry);
+        row[j - 1] = carry;
+        carry = next;
     }
-    ui[len - 1] = ui0;
+    row[len - 1] = carry;
 }
 
-fn uprev(ui: &mut [u32], len: usize, mut ui0: u32) {
-    let mut j = 1;
-    loop {
-        let ui1 = ui[j].wrapping_sub(ui[j - 1]).wrapping_sub(ui0);
-        ui[j - 1] = ui0;
-        ui0 = ui1;
-        j += 1;
-        if j >= len {
-            break;
-        }
+fn row_reduce(row: &mut [u32], len: usize, mut carry: u32) {
+    for j in 1..len {
+        let next = row[j].wrapping_sub(row[j - 1]).wrapping_sub(carry);
+        row[j - 1] = carry;
+        carry = next;
     }
-    ui[len - 1] = ui0;
+    row[len - 1] = carry;
 }
 
-fn ncwrs_urow(n: usize, k: usize, u: &mut [u32]) -> u32 {
+fn pulse_row(n: usize, k: usize, row: &mut [u32]) -> u32 {
     let len = k + 2;
-    u[0] = 0;
-    u[1] = 1;
-    let mut kk = 2;
-    while kk < len {
-        u[kk] = ((kk << 1) - 1) as u32;
-        kk += 1;
+    row[0] = 0;
+    row[1] = 1;
+    for kk in 2..len {
+        row[kk] = ((kk << 1) - 1) as u32;
     }
     for _ in 2..n {
-        unext(&mut u[1..], k + 1, 1);
+        row_extend(&mut row[1..], k + 1, 1);
     }
-    u[k] + u[k + 1]
+    row[k] + row[k + 1]
 }
 
 #[cfg(test)]
@@ -104,44 +92,37 @@ pub fn v_size(n: usize, k: usize) -> u32 {
     if n == 1 {
         return 2;
     }
-    let mut u = vec![0u32; k + 2];
-    ncwrs_urow(n, k, &mut u)
+    let mut row = vec![0u32; k + 2];
+    pulse_row(n, k, &mut row)
 }
 
-fn cwrsi(n: usize, mut k: usize, mut i: u32, y: &mut [i32], u: &mut [u32]) -> f32 {
-    let mut yy = 0.0f32;
-    let mut j = 0;
-    loop {
-        let p = u[k + 1];
-        let neg = i >= p;
-        if neg {
-            i -= p;
+fn decode_codeword(n: usize, mut k: usize, mut index: u32, y: &mut [i32], row: &mut [u32]) -> f32 {
+    let mut energy = 0.0f32;
+    for slot in y.iter_mut().take(n) {
+        let sign_split = row[k + 1];
+        let negative = index >= sign_split;
+        if negative {
+            index -= sign_split;
         }
-        let yj = k;
-        let mut p2 = u[k];
-        while p2 > i {
+        let pulses_before = k;
+        while row[k] > index {
             k -= 1;
-            p2 = u[k];
         }
-        i -= p2;
-        let pulses = (yj - k) as i32;
-        let val = if neg { -pulses } else { pulses };
-        y[j] = val;
-        yy += (val * val) as f32;
-        uprev(u, k + 2, 0);
-        j += 1;
-        if j >= n {
-            break;
-        }
+        index -= row[k];
+        let pulses = (pulses_before - k) as i32;
+        let value = if negative { -pulses } else { pulses };
+        *slot = value;
+        energy += (value * value) as f32;
+        row_reduce(row, k + 2, 0);
     }
-    yy
+    energy
 }
 
 pub fn decode_pulses(y: &mut [i32], n: usize, k: usize, dec: &mut RangeDecoder) -> f32 {
-    let mut u = vec![0u32; k + 2];
-    let nc = ncwrs_urow(n, k, &mut u);
-    let idx = dec.dec_uint(nc);
-    cwrsi(n, k, idx, y, &mut u)
+    let mut row = vec![0u32; k + 2];
+    let codebook_size = pulse_row(n, k, &mut row);
+    let index = dec.dec_uint(codebook_size);
+    decode_codeword(n, k, index, y, &mut row)
 }
 
 pub fn get_required_bits(bits: &mut [i16], n: usize, maxk: usize, frac: i32) {
@@ -151,10 +132,10 @@ pub fn get_required_bits(bits: &mut [i16], n: usize, maxk: usize, frac: i32) {
             bits[k] = (1 << frac) as i16;
         }
     } else {
-        let mut u = vec![0u32; maxk + 2];
-        ncwrs_urow(n, maxk, &mut u);
+        let mut row = vec![0u32; maxk + 2];
+        pulse_row(n, maxk, &mut row);
         for k in 1..=maxk {
-            bits[k] = log2_frac(u[k] + u[k + 1], frac) as i16;
+            bits[k] = log2_frac(row[k] + row[k + 1], frac) as i16;
         }
     }
 }

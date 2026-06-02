@@ -171,11 +171,11 @@ pub fn decode_frame(state: &mut DecoderState, mode: &Mode, frame: &[u8], stereo:
         }
         state.old_log_e2.clone_from(&state.old_log_e);
         state.old_log_e.clone_from(&state.old_band_e);
-        let mut xy = vec![0.0f32; c * n];
+        let mut norm = vec![0.0f32; c * n];
         let pf = PostFilter::none();
         state
             .synth
-            .process(mode, &mut xy, &state.old_band_e, start, end, lm, false, true, c, &pf, &mut pcm);
+            .process(mode, &mut norm, &state.old_band_e, start, end, lm, false, true, c, &pf, &mut pcm);
         return pcm;
     }
 
@@ -266,11 +266,11 @@ pub fn decode_frame(state: &mut DecoderState, mode: &Mode, frame: &[u8], stereo:
 
     energy::decode_fine(&mut rd, mode, start, end, &alloc.fine_bits, c, &mut state.old_band_e);
 
-    let mut xy = vec![0.0f32; c * n];
+    let mut norm = vec![0.0f32; c * n];
     let mut collapse = vec![0u8; c * nb];
     let total_band_bits = (len as i32) * (8 << BITRES) - anti_collapse_rsv;
     {
-        let (x0, x1) = xy.split_at_mut(n);
+        let (x0, x1) = norm.split_at_mut(n);
         let y = if c == 2 { Some(x1) } else { None };
         bands::quant_all_bands(
             mode,
@@ -316,7 +316,7 @@ pub fn decode_frame(state: &mut DecoderState, mode: &Mode, frame: &[u8], stereo:
     if anti_collapse_on {
         bands::anti_collapse(
             mode,
-            &mut xy,
+            &mut norm,
             &collapse,
             lm,
             c,
@@ -338,7 +338,7 @@ pub fn decode_frame(state: &mut DecoderState, mode: &Mode, frame: &[u8], stereo:
     };
     state.synth.process(
         mode,
-        &mut xy,
+        &mut norm,
         &state.old_band_e,
         start,
         end,

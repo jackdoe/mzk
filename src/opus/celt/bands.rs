@@ -136,7 +136,7 @@ struct SplitCtx {
     imid: i32,
     iside: i32,
     delta: i32,
-    itheta: i32,
+    theta: i32,
     qalloc: i32,
 }
 
@@ -222,7 +222,7 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
     }
 }
 
-fn compute_theta(
+fn decode_theta(
     ctx: &mut BandCtx,
     sctx: &mut SplitCtx,
     n: usize,
@@ -247,7 +247,7 @@ fn compute_theta(
         qn = 1;
     }
     let tell = rd.tell_frac() as i32;
-    let mut itheta: i32 = 0;
+    let mut theta: i32 = 0;
     let mut inv = false;
 
     if qn != 1 {
@@ -274,33 +274,33 @@ fn compute_theta(
                 (xv - x0) + (x0 + 1) * p0
             };
             rd.update(fl as u32, fh as u32, ft as u32);
-            itheta = xv;
+            theta = xv;
         } else if b0 > 1 || stereo {
-            itheta = rd.dec_uint((qn + 1) as u32) as i32;
+            theta = rd.dec_uint((qn + 1) as u32) as i32;
         } else {
             let ft = (qh + 1) * (qh + 1);
             let fm = rd.decode(ft as u32) as i32;
             let fl;
             let fs;
             if fm < (qh * (qh + 1) >> 1) {
-                itheta = ((isqrt32(8 * fm as u32 + 1) as i32) - 1) >> 1;
-                fs = itheta + 1;
-                fl = itheta * (itheta + 1) >> 1;
+                theta = ((isqrt32(8 * fm as u32 + 1) as i32) - 1) >> 1;
+                fs = theta + 1;
+                fl = theta * (theta + 1) >> 1;
             } else {
-                itheta = (2 * (qn + 1) - isqrt32(8 * (ft - fm - 1) as u32 + 1) as i32) >> 1;
-                fs = qn + 1 - itheta;
-                fl = ft - ((qn + 1 - itheta) * (qn + 2 - itheta) >> 1);
+                theta = (2 * (qn + 1) - isqrt32(8 * (ft - fm - 1) as u32 + 1) as i32) >> 1;
+                fs = qn + 1 - theta;
+                fl = ft - ((qn + 1 - theta) * (qn + 2 - theta) >> 1);
             }
             rd.update(fl as u32, (fl + fs) as u32, ft as u32);
         }
-        itheta = (itheta * 16384) / qn;
+        theta = (theta * 16384) / qn;
     } else if stereo {
         if *b > 2 << BITRES && ctx.remaining_bits > 2 << BITRES {
             inv = rd.dec_bit_logp(2) != 0;
         } else {
             inv = false;
         }
-        itheta = 0;
+        theta = 0;
     }
     let qalloc = rd.tell_frac() as i32 - tell;
     *b -= qalloc;
@@ -308,19 +308,19 @@ fn compute_theta(
     let imid;
     let iside;
     let delta;
-    if itheta == 0 {
+    if theta == 0 {
         imid = 32767;
         iside = 0;
         *fill &= (1 << bparam) - 1;
         delta = -16384;
-    } else if itheta == 16384 {
+    } else if theta == 16384 {
         imid = 0;
         iside = 32767;
         *fill &= ((1 << bparam) - 1) << bparam;
         delta = 16384;
     } else {
-        imid = bitexact_cos(itheta);
-        iside = bitexact_cos(16384 - itheta);
+        imid = bitexact_cos(theta);
+        iside = bitexact_cos(16384 - theta);
         delta = frac_mul16(((n as i32) - 1) << 7, bitexact_log2tan(iside, imid));
     }
 
@@ -328,11 +328,11 @@ fn compute_theta(
     sctx.imid = imid;
     sctx.iside = iside;
     sctx.delta = delta;
-    sctx.itheta = itheta;
+    sctx.theta = theta;
     sctx.qalloc = qalloc;
 }
 
-fn quant_band_n1(
+fn decode_unit_band(
     ctx: &mut BandCtx,
     x: &mut [f32],
     y: Option<&mut [f32]>,
@@ -363,7 +363,7 @@ fn quant_band_n1(
     1
 }
 
-fn quant_partition(
+fn split_band(
     ctx: &mut BandCtx,
     x: &mut [f32],
     n: usize,
@@ -381,7 +381,7 @@ fn quant_partition(
     let mut lm = lm;
     let mut fill = fill;
     let b0 = bparam;
-    let mut cm: u32 = 0;
+    let mut collapse_mask: u32 = 0;
 
     let i = ctx.i;
     let cache_base = ctx.m.cache.index[((lm + 1) as usize) * ctx.m.nb_ebands + i] as usize;
@@ -400,43 +400,43 @@ fn quant_partition(
             imid: 0,
             iside: 0,
             delta: 0,
-            itheta: 0,
+            theta: 0,
             qalloc: 0,
         };
-        compute_theta(ctx, &mut sctx, n, &mut b, bparam, b0, lm, false, &mut fill, rd);
+        decode_theta(ctx, &mut sctx, n, &mut b, bparam, b0, lm, false, &mut fill, rd);
         let imid = sctx.imid;
         let iside = sctx.iside;
         let mut delta = sctx.delta;
-        let itheta = sctx.itheta;
+        let theta = sctx.theta;
         let qalloc = sctx.qalloc;
         let mid = (1.0 / 32768.0) * imid as f32;
         let side = (1.0 / 32768.0) * iside as f32;
 
-        if b0 > 1 && (itheta & 0x3fff) != 0 {
-            if itheta > 8192 {
+        if b0 > 1 && (theta & 0x3fff) != 0 {
+            if theta > 8192 {
                 delta -= delta >> (4 - lm);
             } else {
                 delta = 0.min(delta + ((n as i32) << BITRES >> (5 - lm)));
             }
         }
-        let mut mbits = 0.max(b.min((b - delta) / 2));
-        let mut sbits = b - mbits;
+        let mut mid_bits = 0.max(b.min((b - delta) / 2));
+        let mut side_bits = b - mid_bits;
         ctx.remaining_bits -= qalloc;
 
         let next_lowband2: Option<&[f32]> = lowband.map(|lb| &lb[n..]);
 
         let mut rebalance = ctx.remaining_bits;
-        if mbits >= sbits {
-            cm = quant_partition(ctx, xl, n, mbits, bparam, lowband, lm, gain * mid, fill, rd);
-            rebalance = mbits - (rebalance - ctx.remaining_bits);
-            if rebalance > 3 << BITRES && itheta != 0 {
-                sbits += rebalance - (3 << BITRES);
+        if mid_bits >= side_bits {
+            collapse_mask = split_band(ctx, xl, n, mid_bits, bparam, lowband, lm, gain * mid, fill, rd);
+            rebalance = mid_bits - (rebalance - ctx.remaining_bits);
+            if rebalance > 3 << BITRES && theta != 0 {
+                side_bits += rebalance - (3 << BITRES);
             }
-            cm |= quant_partition(
+            collapse_mask |= split_band(
                 ctx,
                 xr,
                 n,
-                sbits,
+                side_bits,
                 bparam,
                 next_lowband2,
                 lm,
@@ -445,11 +445,11 @@ fn quant_partition(
                 rd,
             ) << (b0 >> 1);
         } else {
-            cm = quant_partition(
+            collapse_mask = split_band(
                 ctx,
                 xr,
                 n,
-                sbits,
+                side_bits,
                 bparam,
                 next_lowband2,
                 lm,
@@ -457,11 +457,11 @@ fn quant_partition(
                 fill >> bparam,
                 rd,
             ) << (b0 >> 1);
-            rebalance = sbits - (rebalance - ctx.remaining_bits);
-            if rebalance > 3 << BITRES && itheta != 16384 {
-                mbits += rebalance - (3 << BITRES);
+            rebalance = side_bits - (rebalance - ctx.remaining_bits);
+            if rebalance > 3 << BITRES && theta != 16384 {
+                mid_bits += rebalance - (3 << BITRES);
             }
-            cm |= quant_partition(ctx, xl, n, mbits, bparam, lowband, lm, gain * mid, fill, rd);
+            collapse_mask |= split_band(ctx, xl, n, mid_bits, bparam, lowband, lm, gain * mid, fill, rd);
         }
     } else {
         let mut q = super::rate::bits2pulses(&ctx.m.cache, ctx.m.nb_ebands, i, lm, b);
@@ -476,7 +476,7 @@ fn quant_partition(
 
         if q != 0 {
             let k = super::cwrs::get_pulses(q);
-            cm = super::vq::alg_unquant(x, n, k, ctx.spread, bparam as usize, rd, gain);
+            collapse_mask = super::vq::alg_unquant(x, n, k, ctx.spread, bparam as usize, rd, gain);
         } else {
             let cm_mask = ((1u32 << bparam) - 1) as u32;
             fill &= cm_mask as i32;
@@ -491,7 +491,7 @@ fn quant_partition(
                             ctx.seed = celt_lcg_rand(ctx.seed);
                             x[j] = (ctx.seed as i32 >> 20) as f32;
                         }
-                        cm = cm_mask;
+                        collapse_mask = cm_mask;
                     }
                     Some(lb) => {
                         for j in 0..n {
@@ -503,17 +503,17 @@ fn quant_partition(
                             };
                             x[j] = lb[j] + tmp;
                         }
-                        cm = fill as u32;
+                        collapse_mask = fill as u32;
                     }
                 }
                 super::vq::renormalise_vector(x, n, gain);
             }
         }
     }
-    cm
+    collapse_mask
 }
 
-fn quant_band(
+fn decode_band(
     ctx: &mut BandCtx,
     x: &mut [f32],
     n: usize,
@@ -540,7 +540,7 @@ fn quant_band(
     n_b /= bparam as usize;
 
     if n == 1 {
-        return quant_band_n1(ctx, x, None, lowband_out, rd);
+        return decode_unit_band(ctx, x, None, lowband_out, rd);
     }
 
     if tf_change > 0 {
@@ -591,7 +591,7 @@ fn quant_band(
         }
     }
 
-    let mut cm = quant_partition(
+    let mut collapse_mask = split_band(
         ctx,
         x,
         n,
@@ -613,12 +613,12 @@ fn quant_band(
     for _ in 0..time_divide {
         bb >>= 1;
         n_b <<= 1;
-        cm |= cm >> bb;
+        collapse_mask |= collapse_mask >> bb;
         haar1(x, n_b, bb as usize);
     }
 
     for k in 0..recombine {
-        cm = BIT_DEINTERLEAVE_TABLE[cm as usize] as u32;
+        collapse_mask = BIT_DEINTERLEAVE_TABLE[collapse_mask as usize] as u32;
         haar1(x, n0 >> k, 1 << k);
     }
     bb <<= recombine;
@@ -629,11 +629,11 @@ fn quant_band(
             lo[j] = nn * x[j];
         }
     }
-    cm &= (1 << bb) - 1;
-    cm
+    collapse_mask &= (1 << bb) - 1;
+    collapse_mask
 }
 
-fn quant_band_stereo(
+fn decode_band_stereo(
     ctx: &mut BandCtx,
     x: &mut [f32],
     y: &mut [f32],
@@ -648,10 +648,10 @@ fn quant_band_stereo(
     rd: &mut crate::opus::range::RangeDecoder,
 ) -> u32 {
     let mut fill = fill;
-    let mut cm: u32;
+    let mut collapse_mask: u32;
 
     if n == 1 {
-        return quant_band_n1(ctx, x, Some(y), lowband_out, rd);
+        return decode_unit_band(ctx, x, Some(y), lowband_out, rd);
     }
 
     let orig_fill = fill;
@@ -662,42 +662,42 @@ fn quant_band_stereo(
         imid: 0,
         iside: 0,
         delta: 0,
-        itheta: 0,
+        theta: 0,
         qalloc: 0,
     };
-    compute_theta(ctx, &mut sctx, n, &mut b, bparam, bparam, lm, true, &mut fill, rd);
+    decode_theta(ctx, &mut sctx, n, &mut b, bparam, bparam, lm, true, &mut fill, rd);
     let inv = sctx.inv;
     let imid = sctx.imid;
     let iside = sctx.iside;
     let delta = sctx.delta;
-    let itheta = sctx.itheta;
+    let theta = sctx.theta;
     let qalloc = sctx.qalloc;
     let mid = (1.0 / 32768.0) * imid as f32;
     let side = (1.0 / 32768.0) * iside as f32;
 
     if n == 2 {
         let mut sign = 0u32;
-        let mut mbits = b;
-        let mut sbits = 0;
-        if itheta != 0 && itheta != 16384 {
-            sbits = 1 << BITRES;
+        let mut mid_bits = b;
+        let mut side_bits = 0;
+        if theta != 0 && theta != 16384 {
+            side_bits = 1 << BITRES;
         }
-        mbits -= sbits;
-        let c = itheta > 8192;
-        ctx.remaining_bits -= qalloc + sbits;
+        mid_bits -= side_bits;
+        let c = theta > 8192;
+        ctx.remaining_bits -= qalloc + side_bits;
 
-        if sbits != 0 {
+        if side_bits != 0 {
             sign = rd.dec_bits(1);
         }
         let signf = 1.0 - 2.0 * sign as f32;
 
         {
             let (x2, y2): (&mut [f32], &mut [f32]) = if c { (y, x) } else { (x, y) };
-            cm = quant_band(
+            collapse_mask = decode_band(
                 ctx,
                 x2,
                 n,
-                mbits,
+                mid_bits,
                 bparam,
                 lowband,
                 lm,
@@ -722,17 +722,17 @@ fn quant_band_stereo(
         x[1] = tmp1 - y[1];
         y[1] = tmp1 + y[1];
     } else {
-        let mut mbits = 0.max(b.min((b - delta) / 2));
-        let mut sbits = b - mbits;
+        let mut mid_bits = 0.max(b.min((b - delta) / 2));
+        let mut side_bits = b - mid_bits;
         ctx.remaining_bits -= qalloc;
 
         let mut rebalance = ctx.remaining_bits;
-        if mbits >= sbits {
-            cm = quant_band(
+        if mid_bits >= side_bits {
+            collapse_mask = decode_band(
                 ctx,
                 x,
                 n,
-                mbits,
+                mid_bits,
                 bparam,
                 lowband,
                 lm,
@@ -742,15 +742,15 @@ fn quant_band_stereo(
                 fill,
                 rd,
             );
-            rebalance = mbits - (rebalance - ctx.remaining_bits);
-            if rebalance > 3 << BITRES && itheta != 0 {
-                sbits += rebalance - (3 << BITRES);
+            rebalance = mid_bits - (rebalance - ctx.remaining_bits);
+            if rebalance > 3 << BITRES && theta != 0 {
+                side_bits += rebalance - (3 << BITRES);
             }
-            cm |= quant_band(
+            collapse_mask |= decode_band(
                 ctx,
                 y,
                 n,
-                sbits,
+                side_bits,
                 bparam,
                 None,
                 lm,
@@ -761,11 +761,11 @@ fn quant_band_stereo(
                 rd,
             );
         } else {
-            cm = quant_band(
+            collapse_mask = decode_band(
                 ctx,
                 y,
                 n,
-                sbits,
+                side_bits,
                 bparam,
                 None,
                 lm,
@@ -775,15 +775,15 @@ fn quant_band_stereo(
                 fill >> bparam,
                 rd,
             );
-            rebalance = sbits - (rebalance - ctx.remaining_bits);
-            if rebalance > 3 << BITRES && itheta != 16384 {
-                mbits += rebalance - (3 << BITRES);
+            rebalance = side_bits - (rebalance - ctx.remaining_bits);
+            if rebalance > 3 << BITRES && theta != 16384 {
+                mid_bits += rebalance - (3 << BITRES);
             }
-            cm |= quant_band(
+            collapse_mask |= decode_band(
                 ctx,
                 x,
                 n,
-                mbits,
+                mid_bits,
                 bparam,
                 lowband,
                 lm,
@@ -804,7 +804,7 @@ fn quant_band_stereo(
             y[j] = -y[j];
         }
     }
-    cm
+    collapse_mask
 }
 
 fn special_hybrid_folding(
@@ -967,7 +967,7 @@ pub fn quant_all_bands(
         if dual_stereo {
             {
                 let xc = &mut x_buf[bx..bx + n];
-                x_cm = quant_band_mono(
+                x_cm = decode_band_mono(
                     &mut ctx,
                     xc,
                     n,
@@ -988,7 +988,7 @@ pub fn quant_all_bands(
             {
                 let yref = y_buf.as_deref_mut().unwrap();
                 let yc = &mut yref[bx..bx + n];
-                y_cm = quant_band_mono(
+                y_cm = decode_band_mono(
                     &mut ctx,
                     yc,
                     n,
@@ -1019,7 +1019,7 @@ pub fn quant_all_bands(
                 let nb = norm_buf[..n].to_vec();
                 let mut xb = nb.clone();
                 let mut yb = nb.clone();
-                x_cm = quant_band_stereo(
+                x_cm = decode_band_stereo(
                     &mut ctx,
                     &mut xb,
                     &mut yb,
@@ -1037,7 +1037,7 @@ pub fn quant_all_bands(
                 let xc = &mut x_buf[bx..bx + n];
                 let yc = &mut yref[bx..bx + n];
                 let mut out_tmp = vec![0.0f32; n];
-                x_cm = quant_band_stereo(
+                x_cm = decode_band_stereo(
                     &mut ctx,
                     xc,
                     yc,
@@ -1058,7 +1058,7 @@ pub fn quant_all_bands(
             y_cm = x_cm;
         } else {
             let xc = &mut x_buf[bx..bx + n];
-            x_cm = quant_band_mono(
+            x_cm = decode_band_mono(
                 &mut ctx,
                 xc,
                 n,
@@ -1087,7 +1087,7 @@ pub fn quant_all_bands(
     *seed = ctx.seed;
 }
 
-fn quant_band_mono(
+fn decode_band_mono(
     ctx: &mut BandCtx,
     x: &mut [f32],
     n: usize,
@@ -1112,7 +1112,7 @@ fn quant_band_mono(
     } else {
         Some(scratch)
     };
-    let cm = quant_band(
+    let collapse_mask = decode_band(
         ctx,
         x,
         n,
@@ -1129,7 +1129,7 @@ fn quant_band_mono(
     if !last {
         norm_buf[norm_chan_off + out_index..norm_chan_off + out_index + n].copy_from_slice(&out_tmp);
     }
-    cm
+    collapse_mask
 }
 
 pub fn anti_collapse(
