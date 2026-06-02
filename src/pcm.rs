@@ -1,12 +1,15 @@
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 struct Shared {
-    buf: Box<[f32]>,
+    buf: Box<[UnsafeCell<f32>]>,
     mask: usize,
     head: AtomicUsize,
     tail: AtomicUsize,
 }
+
+unsafe impl Sync for Shared {}
 
 pub struct Ring {
     shared: Arc<Shared>,
@@ -23,8 +26,12 @@ pub struct Reader {
 impl Ring {
     pub fn new(capacity_samples: usize) -> Self {
         let cap = capacity_samples.max(1).next_power_of_two();
+        let buf = (0..cap)
+            .map(|_| UnsafeCell::new(0f32))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let shared = Arc::new(Shared {
-            buf: vec![0f32; cap].into_boxed_slice(),
+            buf,
             mask: cap - 1,
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
@@ -53,11 +60,10 @@ impl Writer {
         let used = head.wrapping_sub(tail);
         let free = cap - used;
         let n = data.len().min(free);
-        let ptr = self.shared.buf.as_ptr() as *mut f32;
         for i in 0..n {
             let idx = head.wrapping_add(i) & self.shared.mask;
             unsafe {
-                *ptr.add(idx) = data[i];
+                *self.shared.buf[idx].get() = data[i];
             }
         }
         self.shared
@@ -87,7 +93,7 @@ impl Reader {
         let n = out.len().min(used);
         for i in 0..n {
             let idx = tail.wrapping_add(i) & self.shared.mask;
-            out[i] = self.shared.buf[idx];
+            out[i] = unsafe { *self.shared.buf[idx].get() };
         }
         self.shared
             .tail

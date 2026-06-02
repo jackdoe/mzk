@@ -2,6 +2,13 @@ use crate::error::{Error, Result};
 
 const MAX_FILE: u64 = 512 << 20;
 
+pub fn read_file_capped(path: &std::path::Path) -> Result<Vec<u8>> {
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_FILE {
+        return Err(Error::Unsupported("file too large"));
+    }
+    Ok(std::fs::read(path)?)
+}
+
 pub trait Decoder: Send {
     fn next(&mut self) -> Option<Vec<f32>>;
     fn sample_rate(&self) -> u32;
@@ -12,9 +19,6 @@ pub trait Decoder: Send {
 }
 
 pub fn open(path: &std::path::Path) -> Result<Box<dyn Decoder>> {
-    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_FILE {
-        return Err(Error::Unsupported("file too large"));
-    }
     let ext = path
         .extension()
         .map(|e| e.to_ascii_lowercase())

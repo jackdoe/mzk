@@ -51,7 +51,7 @@ fn fit_channels(pcm: Vec<f32>, coded: usize, out: usize) -> Vec<f32> {
 
 impl OpusDecoder {
     pub fn open(path: &std::path::Path) -> Result<Self> {
-        Self::from_bytes(&std::fs::read(path)?)
+        Self::from_bytes(&crate::decoder::read_file_capped(path)?)
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {

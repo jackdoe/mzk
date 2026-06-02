@@ -208,7 +208,7 @@ fn shuffle_order(playlist: &[PathBuf], seed: u64) -> Vec<usize> {
             placed.push((base + k as f64 / c + jitter, idx));
         }
     }
-    placed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    placed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     placed.into_iter().map(|(_, i)| i).collect()
 }
 

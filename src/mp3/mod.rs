@@ -41,7 +41,7 @@ pub struct Mp3Decoder {
 
 impl Mp3Decoder {
     pub fn open(path: &std::path::Path) -> Result<Self> {
-        Self::from_bytes(std::fs::read(path)?)
+        Self::from_bytes(crate::decoder::read_file_capped(path)?)
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
