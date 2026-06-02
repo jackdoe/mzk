@@ -49,8 +49,8 @@ fn proc_kib(key: &str) -> u64 {
 
 fn bench(files: Vec<std::path::PathBuf>) {
     println!(
-        "{:<6} {:>9} {:>10} {:>9} {:>10} {:>9} {:>9}",
-        "fmt", "audio", "decode", "speed", "samples", "file", "rss"
+        "{:<6} {:>9} {:>10} {:>9} {:>10} {:>9} {:>9} {:>7}",
+        "fmt", "audio", "decode", "speed", "samples", "file", "rss", "peak"
     );
     for path in &files {
         let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -65,11 +65,11 @@ fn bench(files: Vec<std::path::PathBuf>) {
         let rate = dec.sample_rate().max(1);
         let ch = dec.channels().max(1);
         let mut samples: u64 = 0;
-        let mut sink = 0.0f32;
+        let mut peak = 0.0f32;
         while let Some(frame) = dec.next() {
             samples += frame.len() as u64;
-            if let Some(&s) = frame.first() {
-                sink += s;
+            for &s in &frame {
+                peak = peak.max(s.abs());
             }
         }
         let el = t0.elapsed().as_secs_f64();
@@ -77,7 +77,7 @@ fn bench(files: Vec<std::path::PathBuf>) {
         let rss = proc_kib("VmRSS:");
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("?");
         println!(
-            "{:<6} {:>8.2}s {:>9.1}ms {:>8.0}x {:>10} {:>7}KiB {:>7}KiB{}",
+            "{:<6} {:>8.2}s {:>9.1}ms {:>8.0}x {:>10} {:>7}KiB {:>7}KiB {:>7.3}",
             ext,
             secs,
             el * 1000.0,
@@ -85,7 +85,7 @@ fn bench(files: Vec<std::path::PathBuf>) {
             samples,
             bytes / 1024,
             rss,
-            if sink.is_nan() { " nan" } else { "" }
+            peak
         );
     }
     println!("peak RSS: {} KiB", proc_kib("VmHWM:"));

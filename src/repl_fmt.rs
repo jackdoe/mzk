@@ -32,9 +32,28 @@ fn repeat_flag(repeat: &str) -> char {
     }
 }
 
+pub fn fmt_rate(rate: u32) -> String {
+    if rate % 1000 == 0 {
+        format!("{}k", rate / 1000)
+    } else {
+        format!("{:.1}k", rate as f64 / 1000.0)
+    }
+}
+
+pub fn fmt_label(name: &str, ext: &str) -> String {
+    if ext.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}.{}", name, ext)
+    }
+}
+
 pub fn fmt_np(
     index: usize,
     name: &str,
+    ext: &str,
+    rate: u32,
+    channels: u32,
     pos: u64,
     total: u64,
     vol: f32,
@@ -44,19 +63,25 @@ pub fn fmt_np(
     let bar = fmt_bar(pos, total, 10);
     let vol_pct = (vol * 100.0).round() as i64;
     let shuf = if shuffle { "shuf+" } else { "shuf-" };
+    let info = if rate > 0 {
+        format!("{} {}ch  ", fmt_rate(rate), channels)
+    } else {
+        String::new()
+    };
     let tail = format!(
-        "{} {}/{}  vol{} {} rep{}",
+        "{} {}/{}  {}vol{} {} rep{}",
         bar,
         fmt_time(pos),
         fmt_time(total),
+        info,
         vol_pct,
         shuf,
         repeat_flag(repeat)
     );
     let head = format!("{:02}  ", index);
     let fixed = head.chars().count() + 2 + tail.chars().count();
-    let budget = if fixed >= 72 { 0 } else { 72 - fixed };
-    let truncated: String = name.chars().take(budget).collect();
+    let budget = if fixed >= 79 { 0 } else { 79 - fixed };
+    let truncated: String = fmt_label(name, ext).chars().take(budget).collect();
     format!("{}{}  {}", head, truncated, tail)
 }
 
@@ -158,11 +183,24 @@ mod tests {
 
     #[test]
     fn np() {
-        let s = fmt_np(2, "aurora", 151, 291, 0.7, true, "off");
-        assert!(s.len() <= 72);
+        let s = fmt_np(2, "aurora", "flac", 44100, 2, 151, 291, 0.7, true, "off");
+        assert!(s.len() <= 79);
         assert!(s.contains("2:31/4:51"));
-        let long = fmt_np(2, &"x".repeat(200), 151, 291, 0.7, true, "off");
-        assert!(long.len() <= 72);
+        assert!(s.contains("aurora.flac"));
+        assert!(s.contains("44.1k 2ch"));
+        let long = fmt_np(2, &"x".repeat(200), "opus", 48000, 2, 151, 291, 0.7, true, "off");
+        assert!(long.len() <= 79);
+        assert!(long.contains("48k 2ch"));
+        let no_track = fmt_np(1, "song", "mp3", 0, 0, 0, 0, 1.0, false, "all");
+        assert!(no_track.contains("song.mp3"));
+        assert!(!no_track.contains("0ch"));
+    }
+
+    #[test]
+    fn rate() {
+        assert_eq!(fmt_rate(48000), "48k");
+        assert_eq!(fmt_rate(44100), "44.1k");
+        assert_eq!(fmt_rate(16000), "16k");
     }
 
     #[test]

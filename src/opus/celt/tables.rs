@@ -1,5 +1,4 @@
 pub const NB_EBANDS: usize = 21;
-pub const FRAME: usize = 960;
 pub const OVERLAP: usize = 120;
 pub const MAX_LM: usize = 3;
 pub const SHORT_MDCT: usize = 120;

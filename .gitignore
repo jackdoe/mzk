@@ -1,3 +1,5 @@
 /target
 tests/fixtures/voyager/
 /prof
+tests/fixtures/opus-matrix/
+/opus-examples/

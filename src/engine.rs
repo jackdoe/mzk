@@ -35,6 +35,9 @@ pub enum Command {
 pub struct Status {
     pub index: usize,
     pub name: String,
+    pub ext: String,
+    pub rate: u32,
+    pub channels: u32,
     pub pos: u64,
     pub total: u64,
     pub vol: f32,
@@ -59,9 +62,13 @@ impl Engine {
 
     pub fn spawn(playlist: Vec<PathBuf>) -> Result<Engine> {
         let first = playlist.first().map(|p| track_name(p)).unwrap_or_default();
+        let first_ext = playlist.first().map(|p| track_ext(p)).unwrap_or_default();
         let status = Arc::new(Mutex::new(Status {
             index: 0,
             name: first,
+            ext: first_ext,
+            rate: 0,
+            channels: 0,
             pos: 0,
             total: 0,
             vol: 1.0,
@@ -115,6 +122,12 @@ fn track_name(p: &std::path::Path) -> String {
     p.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| p.to_string_lossy().into_owned())
+}
+
+fn track_ext(p: &std::path::Path) -> String {
+    p.extension()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 fn next_rand(state: &mut u64) -> f64 {
@@ -419,7 +432,9 @@ fn update_status(
     let idx = order.get(order_pos).copied().unwrap_or(0);
     s.index = idx;
     if idx != *shown_idx {
-        s.name = track_name(&playlist[idx.min(playlist.len().saturating_sub(1))]);
+        let p = &playlist[idx.min(playlist.len().saturating_sub(1))];
+        s.name = track_name(p);
+        s.ext = track_ext(p);
         *shown_idx = idx;
     }
     s.vol = vol;
@@ -429,6 +444,8 @@ fn update_status(
     if let Some(t) = track {
         let rate = t.sample_rate() as u64;
         let ch = t.channels() as u64;
+        s.rate = t.sample_rate();
+        s.channels = t.channels() as u32;
         s.total = t.duration_frames() / rate;
         s.pos = (consumed_samples / ch / rate).min(s.total.max(1));
     }

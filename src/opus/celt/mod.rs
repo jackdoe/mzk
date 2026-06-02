@@ -31,7 +31,6 @@ pub struct Mode {
     pub alloc_vectors: Vec<u8>,
     pub cache: PulseCache,
     pub mdct: Mdct,
-    pub frame: usize,
     pub overlap: usize,
     pub max_lm: usize,
     pub short_mdct: usize,
@@ -59,7 +58,6 @@ impl Mode {
             alloc_vectors,
             cache,
             mdct,
-            frame: FRAME,
             overlap: OVERLAP,
             max_lm: MAX_LM,
             short_mdct: SHORT_MDCT,
@@ -141,14 +139,19 @@ impl DecoderState {
     }
 }
 
-pub fn decode_frame(state: &mut DecoderState, mode: &Mode, frame: &[u8], stereo: bool) -> Vec<f32> {
+pub fn decode_frame(
+    state: &mut DecoderState,
+    mode: &Mode,
+    frame: &[u8],
+    lm: i32,
+    end: usize,
+    stereo: bool,
+) -> Vec<f32> {
     let nb = mode.nb_ebands;
     let c = if stereo { 2 } else { 1 };
-    let lm = mode.max_lm as i32;
     let m = 1usize << lm;
-    let n = mode.frame;
+    let n = mode.short_mdct << lm as usize;
     let start = 0usize;
-    let end = nb;
     let eb = &mode.e_bands;
     let len = frame.len();
 
@@ -377,7 +380,7 @@ mod tests {
     fn mode_has_21_bands_and_960_frame() {
         let m = Mode::new();
         assert_eq!(m.nb_ebands, 21);
-        assert_eq!(m.frame, 960);
+        assert_eq!(m.short_mdct << m.max_lm, 960);
         assert_eq!(*m.e_bands.last().unwrap(), 100);
     }
 
@@ -398,9 +401,18 @@ mod tests {
         let mut state = DecoderState::new(2);
         let mut got: Vec<f32> = Vec::new();
         for pkt in &stream.packets {
-            let cfg = crate::opus::toc::Config::parse(pkt).unwrap();
-            let frame = decode_frame(&mut state, &mode, cfg.frame, cfg.stereo);
-            got.extend_from_slice(&frame);
+            let (toc, ranges) = crate::opus::toc::split_frames(pkt).unwrap();
+            for (off, len) in ranges {
+                let frame = decode_frame(
+                    &mut state,
+                    &mode,
+                    &pkt[off..off + len],
+                    toc.lm as i32,
+                    toc.end as usize,
+                    toc.stereo,
+                );
+                got.extend_from_slice(&frame);
+            }
         }
         let skip = stream.head.pre_skip as usize * 2;
         let got = &got[skip.min(got.len())..];
@@ -431,9 +443,9 @@ mod tests {
         crate::fuzz::each_case(6000, 80, |frame| {
             for &stereo in &[false, true] {
                 let mut state = DecoderState::new(if stereo { 2 } else { 1 });
-                let pcm = decode_frame(&mut state, &mode, frame, stereo);
+                let pcm = decode_frame(&mut state, &mode, frame, mode.max_lm as i32, mode.nb_ebands, stereo);
                 let c = if stereo { 2 } else { 1 };
-                assert_eq!(pcm.len(), mode.frame * c);
+                assert_eq!(pcm.len(), (mode.short_mdct << mode.max_lm) * c);
                 assert!(pcm.iter().all(|v| v.is_finite()));
             }
         });
@@ -444,7 +456,7 @@ mod tests {
         let mode = Mode::new();
         let mut state = DecoderState::new(2);
         crate::fuzz::each_case(2000, 80, |frame| {
-            let pcm = decode_frame(&mut state, &mode, frame, true);
+            let pcm = decode_frame(&mut state, &mode, frame, mode.max_lm as i32, mode.nb_ebands, true);
             assert!(pcm.iter().all(|v| v.is_finite()));
         });
     }

@@ -1,5 +1,5 @@
 use crate::engine::{Command, Engine, Repeat};
-use crate::repl_fmt::{fmt_np, fmt_time, parse, Parsed};
+use crate::repl_fmt::{fmt_label, fmt_np, fmt_rate, fmt_time, parse, Parsed};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -18,6 +18,9 @@ fn print_np(eng: &Engine) {
         fmt_np(
             s.index + 1,
             &s.name,
+            &s.ext,
+            s.rate,
+            s.channels,
             s.pos,
             s.total,
             s.vol,
@@ -158,7 +161,13 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
 
 fn announce(eng: &Engine) {
     let s = eng.sync();
-    println!(">> now {:>2}  {}  {}", s.index + 1, truncate(&s.name, 40), fmt_time(s.total));
+    let label = fmt_label(&truncate(&s.name, 40), &s.ext);
+    let info = if s.rate > 0 {
+        format!("  {} {}ch", fmt_rate(s.rate), s.channels)
+    } else {
+        String::new()
+    };
+    println!(">> now {:>2}  {}  {}{}", s.index + 1, label, fmt_time(s.total), info);
 }
 
 fn truncate(s: &str, n: usize) -> String {
