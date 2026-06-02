@@ -43,6 +43,7 @@ impl<'a> Iterator for PageReader<'a> {
             let blen: usize = lacing.iter().map(|&b| b as usize).sum();
             let bstart = lstart + nseg;
             if bstart + blen > d.len() {
+                self.pos = d.len();
                 return Some(Err(Error::BadOgg("truncated body")));
             }
             let granule = i64::from_le_bytes(d[self.pos + 6..self.pos + 14].try_into().unwrap());
@@ -160,5 +161,30 @@ mod tests {
         let first_audio = &stream.packets[0];
         assert_eq!(first_audio[0] >> 3, 31);
         assert!(stream.total_samples > 48000);
+    }
+
+    #[test]
+    fn fuzz_page_reader_and_parse_never_panic() {
+        crate::fuzz::each_case(8000, 256, |data| {
+            for pg in PageReader::new(data) {
+                if let Ok(p) = pg {
+                    let _ = p.granule;
+                    let _ = p.lacing.len();
+                    let _ = p.body.len();
+                }
+            }
+            let _ = OpusStream::parse(data);
+        });
+    }
+
+    #[test]
+    fn fuzz_parse_with_ogg_sync_prefix() {
+        crate::fuzz::each_case(8000, 256, |data| {
+            let mut framed = Vec::with_capacity(data.len() + 4);
+            framed.extend_from_slice(b"OggS");
+            framed.extend_from_slice(data);
+            let _ = OpusStream::parse(&framed);
+            for _ in PageReader::new(&framed).flatten() {}
+        });
     }
 }

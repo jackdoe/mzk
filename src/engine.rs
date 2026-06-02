@@ -3,6 +3,7 @@ use crate::decoder::{open, Decoder};
 use crate::error::Result;
 use crate::pcm::Ring;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,6 +47,8 @@ pub struct Status {
 pub struct Engine {
     tx: Sender<Command>,
     status: Arc<Mutex<Status>>,
+    sent: AtomicU64,
+    acked: Arc<AtomicU64>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -69,20 +72,36 @@ impl Engine {
         }));
         let (tx, rx) = std::sync::mpsc::channel();
         let st = status.clone();
-        let handle = std::thread::spawn(move || run(playlist, rx, st));
+        let acked = Arc::new(AtomicU64::new(0));
+        let ack = acked.clone();
+        let handle = std::thread::spawn(move || run(playlist, rx, st, ack));
         Ok(Engine {
             tx,
             status,
+            sent: AtomicU64::new(0),
+            acked,
             handle: Some(handle),
         })
     }
 
     pub fn send(&self, c: Command) {
+        self.sent.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(c);
     }
 
     pub fn status(&self) -> Status {
         self.status.lock().unwrap().clone()
+    }
+
+    pub fn sync(&self) -> Status {
+        let want = self.sent.load(Ordering::Relaxed);
+        for _ in 0..200 {
+            if self.acked.load(Ordering::Acquire) >= want {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.status()
     }
 
     pub fn join(mut self) {
@@ -159,10 +178,13 @@ fn reopen_sink(
     ring: &Ring,
     cur: &mut (u32, u32),
     track: &Option<Track>,
-) {
+) -> bool {
+    if track.is_none() {
+        return false;
+    }
     let want = format_of(track);
     if want == *cur {
-        return;
+        return false;
     }
     sink.stop();
     *sink = PlatformSink::new(ring.reader(), want.0, want.1);
@@ -171,11 +193,13 @@ fn reopen_sink(
     }
     ring.writer().clear();
     *cur = want;
+    true
 }
 
-fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>) {
+fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>, acked: Arc<AtomicU64>) {
     let ring = Ring::new(RING_CAP);
     let writer = ring.writer();
+    let mut consumed: u64 = 0;
 
     let n = playlist.len();
     let mut order: Vec<usize> = (0..n).collect();
@@ -200,6 +224,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
     loop {
         let mut quit = false;
         while let Ok(cmd) = rx.try_recv() {
+            consumed += 1;
             match cmd {
                 Command::Quit => {
                     quit = true;
@@ -292,7 +317,7 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
         }
 
         let fill = (RING_CAP - writer.available()) as u64;
-        let consumed = pushed.saturating_sub(fill);
+        let consumed_samples = pushed.saturating_sub(fill);
 
         let mut worked = false;
         if !paused {
@@ -312,10 +337,12 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
                             } else {
                                 track = open_index(&playlist, order[order_pos], &status);
                             }
-                            reopen_sink(&mut sink, &ring, &mut cur_format, &track);
+                            let changed = reopen_sink(&mut sink, &ring, &mut cur_format, &track);
                             pending.clear();
-                            writer.clear();
-                            sink.flush();
+                            if changed {
+                                writer.clear();
+                                sink.flush();
+                            }
                             pushed = 0;
                         }
                     }
@@ -331,7 +358,8 @@ fn run(playlist: Vec<PathBuf>, rx: Receiver<Command>, status: Arc<Mutex<Status>>
             }
         }
 
-        update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, consumed);
+        update_status(&status, &playlist, &order, order_pos, &track, vol, shuffle, repeat, paused, consumed_samples);
+        acked.store(consumed, Ordering::Release);
 
         if !worked {
             std::thread::sleep(Duration::from_millis(8));

@@ -116,7 +116,7 @@ pub struct DecoderState {
 
 impl DecoderState {
     pub fn new(channels: usize) -> Self {
-        let n = channels * NB_EBANDS;
+        let n = 2 * NB_EBANDS;
         DecoderState {
             old_band_e: vec![0.0; n],
             old_log_e: vec![-28.0; n],
@@ -423,5 +423,29 @@ mod tests {
         assert_eq!(m.cache.caps.len(), (MAX_LM + 1) * 2 * NB_EBANDS);
         assert!(m.cache.caps.iter().any(|&c| c > 0));
         assert!(!m.cache.bits.is_empty());
+    }
+
+    #[test]
+    fn fuzz_decode_frame_never_panics() {
+        let mode = Mode::new();
+        crate::fuzz::each_case(6000, 80, |frame| {
+            for &stereo in &[false, true] {
+                let mut state = DecoderState::new(if stereo { 2 } else { 1 });
+                let pcm = decode_frame(&mut state, &mode, frame, stereo);
+                let c = if stereo { 2 } else { 1 };
+                assert_eq!(pcm.len(), mode.frame * c);
+                assert!(pcm.iter().all(|v| v.is_finite()));
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_decode_frame_sequence_keeps_state_sane() {
+        let mode = Mode::new();
+        let mut state = DecoderState::new(2);
+        crate::fuzz::each_case(2000, 80, |frame| {
+            let pcm = decode_frame(&mut state, &mode, frame, true);
+            assert!(pcm.iter().all(|v| v.is_finite()));
+        });
     }
 }

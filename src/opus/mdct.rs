@@ -54,7 +54,8 @@ impl Mdct {
         let trig = &self.trig[shift];
         let ov2 = self.overlap / 2;
 
-        let mut f = vec![(0.0f32, 0.0f32); n4];
+        let mut f_buf = [(0.0f32, 0.0f32); 480];
+        let f = &mut f_buf[..n4];
         for i in 0..n4 {
             let x1 = input[stride * (2 * i)];
             let x2 = input[stride * (n2 - 1 - 2 * i)];
@@ -64,7 +65,7 @@ impl Mdct {
             let yi = x1 * ti - x2 * tn4;
             f[i] = (yi, yr);
         }
-        self.ffts[shift].forward(&mut f);
+        self.ffts[shift].forward(f);
 
         let half = (n4 + 1) >> 1;
         for i in 0..half {

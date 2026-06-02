@@ -40,8 +40,11 @@ pub struct Mp3Decoder {
 
 impl Mp3Decoder {
     pub fn open(path: &std::path::Path) -> Result<Self> {
-        let data = std::fs::read(path)?;
-        let id3 = skip_id3v2(&data);
+        Self::from_bytes(std::fs::read(path)?)
+    }
+
+    pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
+        let id3 = skip_id3v2(&data).min(data.len());
         let mut ff = 0usize;
         let (off, fbytes) = find_frame(&data[id3..], &mut ff);
         if fbytes == 0 {
@@ -379,5 +382,46 @@ mod tests {
             }
         }
         assert!(best < 0.05, "min relative RMS {best} too high");
+    }
+
+    #[test]
+    fn fuzz_framing_never_panics() {
+        crate::fuzz::each_case(8000, 512, |data| {
+            let id3 = skip_id3v2(data).min(data.len());
+            let mut ff = 0usize;
+            let _ = find_frame(&data[id3..], &mut ff);
+        });
+    }
+
+    #[test]
+    fn fuzz_full_decode_never_panics() {
+        crate::fuzz::each_case(6000, 1024, |data| {
+            if let Ok(mut dec) = Mp3Decoder::from_bytes(data.to_vec()) {
+                for _ in 0..16 {
+                    match dec.next() {
+                        Some(frame) => assert!(frame.iter().all(|v| v.is_finite())),
+                        None => break,
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fuzz_full_decode_with_frame_sync_prefix() {
+        crate::fuzz::each_case(6000, 1024, |data| {
+            let mut framed = Vec::with_capacity(data.len() + 2);
+            framed.push(0xff);
+            framed.push(0xfb);
+            framed.extend_from_slice(data);
+            if let Ok(mut dec) = Mp3Decoder::from_bytes(framed) {
+                for _ in 0..16 {
+                    match dec.next() {
+                        Some(frame) => assert!(frame.iter().all(|v| v.is_finite())),
+                        None => break,
+                    }
+                }
+            }
+        });
     }
 }

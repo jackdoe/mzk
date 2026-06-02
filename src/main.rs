@@ -8,6 +8,8 @@ mod opus;
 mod pcm;
 mod repl;
 mod repl_fmt;
+#[cfg(test)]
+mod fuzz;
 
 fn main() {
     let files: Vec<std::path::PathBuf> = std::env::args().skip(1).map(Into::into).collect();

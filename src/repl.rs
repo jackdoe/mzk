@@ -110,8 +110,7 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
             }
             Parsed::Pause => {
                 eng.send(Command::Pause);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let s = eng.status();
+                let s = eng.sync();
                 println!("{}", if s.paused { "pause" } else { "play" });
             }
             Parsed::Next => {
@@ -128,8 +127,7 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
             }
             Parsed::VolDelta(d) => {
                 eng.send(Command::VolDelta(d));
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let s = eng.status();
+                let s = eng.sync();
                 println!("vol {}", (s.vol * 100.0).round() as i32);
             }
             Parsed::Seek(d) => {
@@ -159,8 +157,7 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
 }
 
 fn announce(eng: &Engine) {
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    let s = eng.status();
+    let s = eng.sync();
     println!(">> now {:>2}  {}  {}", s.index + 1, truncate(&s.name, 40), fmt_time(s.total));
 }
 

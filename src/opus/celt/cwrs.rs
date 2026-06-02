@@ -1,3 +1,4 @@
+use super::tables::CELT_MAX_PULSES;
 use crate::opus::range::{ec_ilog, RangeDecoder};
 
 pub fn log2_frac(val: u32, frac: i32) -> i32 {
@@ -119,10 +120,11 @@ fn decode_codeword(n: usize, mut k: usize, mut index: u32, y: &mut [i32], row: &
 }
 
 pub fn decode_pulses(y: &mut [i32], n: usize, k: usize, dec: &mut RangeDecoder) -> f32 {
-    let mut row = vec![0u32; k + 2];
-    let codebook_size = pulse_row(n, k, &mut row);
+    let mut row_buf = [0u32; CELT_MAX_PULSES as usize + 2];
+    let row = &mut row_buf[..k + 2];
+    let codebook_size = pulse_row(n, k, row);
     let index = dec.dec_uint(codebook_size);
-    decode_codeword(n, k, index, y, &mut row)
+    decode_codeword(n, k, index, y, row)
 }
 
 pub fn get_required_bits(bits: &mut [i16], n: usize, maxk: usize, frac: i32) {

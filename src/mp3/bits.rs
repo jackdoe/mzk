@@ -36,3 +36,25 @@ impl<'a> Bits<'a> {
         cache | (next >> (-shl) as u32)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fuzz_get_bits_never_panics() {
+        crate::fuzz::each_case(8000, 256, |data| {
+            if data.is_empty() {
+                return;
+            }
+            let mut bs = Bits::new(data, data.len());
+            for step in 0..512 {
+                let n = (step as u32 % 24) + 1;
+                let _ = bs.get_bits(n);
+                if bs.pos > bs.limit + 64 {
+                    break;
+                }
+            }
+        });
+    }
+}

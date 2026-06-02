@@ -232,4 +232,41 @@ mod tests {
         let s = d.dec_icdf(&icdf, 8);
         assert!(s == 0 || s == 1);
     }
+
+    #[test]
+    fn fuzz_never_panics_on_arbitrary_bytes() {
+        crate::fuzz::each_case(4000, 96, |data| {
+            if data.is_empty() {
+                return;
+            }
+            let mut d = RangeDecoder::new(data);
+            let icdf = [128u8, 64, 16, 0];
+            for step in 0..64 {
+                match step % 6 {
+                    0 => {
+                        let ft = (d.decode(64) + 1).min(64);
+                        d.update(0, 1, ft.max(2));
+                    }
+                    1 => {
+                        d.decode_bin(5);
+                        d.update(0, 1, 32);
+                    }
+                    2 => {
+                        d.dec_bit_logp(3);
+                    }
+                    3 => {
+                        d.dec_icdf(&icdf, 8);
+                    }
+                    4 => {
+                        d.dec_uint(((step as u32) << 3) + 2);
+                    }
+                    _ => {
+                        d.dec_bits((step as u32 % 25) + 1);
+                    }
+                }
+                let _ = d.tell();
+                let _ = d.tell_frac();
+            }
+        });
+    }
 }

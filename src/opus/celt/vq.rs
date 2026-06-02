@@ -83,11 +83,12 @@ pub fn alg_unquant(
     dec: &mut RangeDecoder,
     gain: f32,
 ) -> u32 {
-    let mut iy = vec![0i32; n];
-    let energy = decode_pulses(&mut iy, n, k as usize, dec);
-    scale_to_unit_norm(&iy, x, n, energy, gain);
+    let mut iy_buf = [0i32; 256];
+    let iy = &mut iy_buf[..n];
+    let energy = decode_pulses(iy, n, k as usize, dec);
+    scale_to_unit_norm(iy, x, n, energy, gain);
     undo_spreading(x, n, blocks, k, spread);
-    collapse_mask(&iy, n, blocks)
+    collapse_mask(iy, n, blocks)
 }
 
 pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
