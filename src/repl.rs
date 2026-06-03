@@ -84,6 +84,7 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
     }
     print_np(&eng);
     let stdin = std::io::stdin();
+    let mut last = String::new();
     loop {
         print!("mzk> ");
         let _ = std::io::stdout().flush();
@@ -93,16 +94,20 @@ pub fn run(eng: Engine, names: Vec<PathBuf>) {
             Ok(_) => {}
             Err(_) => break,
         }
+        if line.trim().is_empty() {
+            if last.is_empty() {
+                continue;
+            }
+            line = last.clone();
+        }
         let parsed = match parse(&line) {
             Some(p) => p,
             None => {
-                if line.trim().is_empty() {
-                    continue;
-                }
                 println!("?");
                 continue;
             }
         };
+        last = line;
         match parsed {
             Parsed::Quit => {
                 eng.send(Command::Quit);
