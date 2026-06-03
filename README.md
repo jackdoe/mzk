@@ -57,7 +57,7 @@ which codec it is. Each decoder yields interleaved `f32` at its own rate:
 
 ```
 file ── decoder::open ──┐
-                        ├─ src/opus/  (.opus)  ogg → toc → celt → f32 @48k  ┐
+                        ├─ src/opus/  (.opus)  ogg → toc → celt → f32 @48k   ┐
                         ├─ src/mp3/   (.mp3)   header → reservoir → huffman  │
                         │                       → requant → imdct → synth    │ Box<dyn
                         ├─ src/flac/  (.flac)  metadata → subframes → rice   │ Decoder>
