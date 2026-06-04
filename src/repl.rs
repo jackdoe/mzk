@@ -1,5 +1,5 @@
-use crate::engine::{Command, Engine, Repeat, Status};
-use crate::repl_fmt::{fmt_label, fmt_np, fmt_time, parse, Parsed};
+use crate::engine::{Command, Engine, Repeat};
+use crate::repl_fmt::{fmt_label, fmt_np, fmt_rate, fmt_time, parse, Parsed};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,7 +12,8 @@ fn repeat_word(r: Repeat) -> &'static str {
     }
 }
 
-fn print_status(s: &Status) {
+fn print_np(eng: &Engine) {
+    let s = eng.status();
     println!(
         "{}",
         fmt_np(
@@ -30,10 +31,6 @@ fn print_status(s: &Status) {
             repeat_word(s.repeat)
         )
     );
-}
-
-fn print_np(eng: &Engine) {
-    print_status(&eng.status());
 }
 
 fn print_ls(eng: &Engine, names: &[String], from: Option<usize>, count: Option<usize>) {
@@ -208,5 +205,14 @@ fn announce(eng: &Engine) {
         std::thread::sleep(Duration::from_millis(1));
         s = eng.status();
     }
-    print_status(&s);
+    let label = fmt_label(&truncate(&s.name, 40), &s.ext);
+    if s.rate > 0 {
+        println!(">> now {:>2}  {}  {}  {} {}ch", s.index + 1, label, fmt_time(s.total), fmt_rate(s.rate), s.channels);
+    } else {
+        println!(">> now {:>2}  {}", s.index + 1, label);
+    }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
 }
